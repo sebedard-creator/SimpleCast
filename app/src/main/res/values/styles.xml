@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="Theme.AppCompat.NoActionBar">
+        <item name="colorPrimary">#102225</item>
+        <item name="colorPrimaryDark">#102225</item>
+        <item name="colorAccent">#54E0C0</item>
+        <item name="colorControlNormal">#EBF5F1</item>
+        <item name="colorButtonNormal">#203638</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#102225</item>
+    </style>
+</resources>
