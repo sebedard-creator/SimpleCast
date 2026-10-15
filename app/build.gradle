@@ -8,8 +8,8 @@ android {
         applicationId 'ca.sebed.castsimple'
         minSdk 26
         targetSdk 35
-        versionCode 2
-        versionName '0.1.1'
+        versionCode 8
+        versionName '0.3.1'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     buildTypes {
@@ -25,12 +25,20 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+    testOptions {
+        unitTests.all {
+            // Desktop Java restricts Origin by default; Android's HTTP client allows it.
+            jvmArgs '-Dsun.net.http.allowRestrictedHeaders=true'
+        }
+    }
 }
 
 dependencies {
+    implementation project(':protocol')
     implementation 'androidx.appcompat:appcompat:1.7.1'
     implementation 'androidx.webkit:webkit:1.14.0'
     implementation 'com.google.android.gms:play-services-cast-framework:22.3.1'
+    implementation 'org.nanohttpd:nanohttpd:2.3.1'
     testImplementation 'junit:junit:4.13.2'
     androidTestImplementation 'androidx.test:runner:1.6.2'
     androidTestImplementation 'androidx.test:rules:1.6.1'

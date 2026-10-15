@@ -45,7 +45,8 @@
     if (!url || !mime) return;
     const key = url + '|' + player;
     const fingerprint = mime + '|' + live;
-    if (sent.get(key) === fingerprint || (sent.size >= 150 && !sent.has(key))) return;
+    if (sent.get(key) === fingerprint) return;
+    if (sent.size >= 150 && !sent.has(key)) sent.delete(sent.keys().next().value);
     sent.set(key, fingerprint);
     post({ event: 'stream', url, mime, player, live });
   }
@@ -60,7 +61,7 @@
         const id = 'video-' + (++nextId);
         ids.set(video, id);
         videos.set(id, video);
-        ['play', 'loadedmetadata', 'durationchange', 'emptied'].forEach(event => {
+        ['play', 'pause', 'ended', 'loadedmetadata', 'durationchange', 'emptied'].forEach(event => {
           video.addEventListener(event, () => {
             if (event === 'play') activePlayer = id;
             scan();

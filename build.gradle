@@ -1,1 +1,11 @@
 plugins { id 'com.android.application' version '9.0.0' apply false }
+
+tasks.register('packageRelease', Copy) {
+    group = 'distribution'
+    description = 'Checks both apps and copies their release APKs into dist/.'
+    dependsOn ':app:assembleRelease', ':tv:assembleRelease',
+        ':app:testDebugUnitTest', ':protocol:test', ':app:lintRelease', ':tv:lintRelease'
+    from('app/build/outputs/apk/release/app-release.apk') { rename { 'SimpleCast.apk' } }
+    from('tv/build/outputs/apk/release/tv-release.apk') { rename { 'SimpleCast-TV.apk' } }
+    into layout.projectDirectory.dir('dist')
+}

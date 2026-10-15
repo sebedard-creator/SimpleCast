@@ -18,6 +18,7 @@ public final class StreamCatalog {
         public String player;
         public String title;
         public Boolean live;
+        private long lastSeen;
         private final Set<String> associations = new LinkedHashSet<>();
         Stream(String url, String mime, String frame, String player, String title, Boolean live) {
             this.url = url; this.mime = mime; this.frame = frame; this.player = player;
@@ -35,13 +36,15 @@ public final class StreamCatalog {
             return associations.contains(frame + "\n" + player);
         }
         public String format() {
-            if (mime.contains("mpegurl")) return "HLS";
-            if (mime.contains("dash")) return "DASH";
-            if (mime.contains("webm")) return "WebM";
+            String type = mime.toLowerCase(Locale.ROOT);
+            if (type.contains("mpegurl")) return "HLS";
+            if (type.contains("dash")) return "DASH";
+            if (type.contains("webm")) return "WebM";
             return "MP4";
         }
     }
     private final Map<String, Stream> streams = new LinkedHashMap<>();
+    private long observations;
 
     public static String mediaMime(String url, String contentType) {
         if (!validUrl(url)) return null;
@@ -62,12 +65,7 @@ public final class StreamCatalog {
     }
 
     public static boolean validUrl(String value) {
-        if (value == null || value.length() > 16384) return false;
-        try {
-            URI uri = new URI(value);
-            return ("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
-                && uri.getHost() != null && uri.getRawUserInfo() == null;
-        } catch (Exception ignored) { return false; }
+        return PlaybackContext.validUrl(value);
     }
 
     public Stream add(String url, String type, String frame, String player, String title, Boolean live) {
@@ -75,7 +73,10 @@ public final class StreamCatalog {
         if (mime == null) return null;
         Stream current = streams.get(url);
         if (current == null) {
-            if (streams.size() >= 150) return null;
+            if (streams.size() >= 150) {
+                Stream oldest = streams.values().stream().min(java.util.Comparator.comparingLong(s -> s.lastSeen)).orElseThrow();
+                streams.remove(oldest.url);
+            }
             current = new Stream(url, mime, frame, player, title, live);
             streams.put(url, current);
         } else {
@@ -89,9 +90,19 @@ public final class StreamCatalog {
             }
             if (live != null) current.live = live;
         }
+        current.lastSeen = ++observations;
         return current;
+    }
+    /** Exact player associations come first; renewed URLs precede older observations. */
+    public List<Stream> ranked(String frame, String player) {
+        List<Stream> result = new ArrayList<>();
+        for (Stream stream : streams.values())
+            if (frame == null || stream.matches(frame, player)) result.add(stream);
+        result.sort(java.util.Comparator.<Stream>comparingInt(s -> frame != null && s.exactMatch(frame, player) ? 0 : 1)
+            .thenComparing(java.util.Comparator.comparingLong((Stream s) -> s.lastSeen).reversed()));
+        return result;
     }
     public List<Stream> all() { return new ArrayList<>(streams.values()); }
     public int size() { return streams.size(); }
-    public void clear() { streams.clear(); }
+    public void clear() { streams.clear(); observations = 0; }
 }

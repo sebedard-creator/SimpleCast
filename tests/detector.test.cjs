@@ -100,3 +100,21 @@ test('removed players disappear and repeat scanning deduplicates streams', () =>
   env.context.__simpleCastControl({ action: 'scan' });
   assert.ok(env.messages.some(m => m.event === 'remove-player' && m.player === 'video-1'));
 });
+
+test('paused playback updates the native player state immediately', () => {
+  const player = video('Game', 'https://cdn.test/live.m3u8');
+  const env = environment([player]);
+  player.paused = false; player.listeners.play();
+  assert.equal(env.messages.filter(m => m.event === 'player').at(-1).playing, true);
+  player.paused = true; player.listeners.pause();
+  assert.equal(env.messages.filter(m => m.event === 'player').at(-1).playing, false);
+});
+
+test('long playback keeps detecting new signed URLs after the catalog limit', () => {
+  const env = environment([video('Game', 'blob:https://page.test/id')]);
+  for (let i = 0; i < 180; i++) {
+    const xhr = new env.context.XMLHttpRequest();
+    xhr.open('GET', 'https://cdn.test/live.m3u8?token=' + i);
+  }
+  assert.ok(env.messages.some(m => m.event === 'stream' && m.url.endsWith('?token=179')));
+});

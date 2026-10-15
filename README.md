@@ -1,43 +1,51 @@
 # SimpleCast
 
-A lightweight Android app that discovers video players on web pages and sends their streams to Chromecast. No direct video URL required, no app ads, and no added analytics.
+A lightweight Android app that finds video players on web pages and sends their streams to Chromecast or SimpleCast TV. No direct video URL required, no app ads, and no added analytics.
 
-## Features
-
-- Detects video players, including players embedded in iframes.
-- Finds MP4, WebM, HLS, and DASH streams, including manifests without file extensions.
-- Supports URL sharing from browsers and playback controls for Chromecast.
-
-## Screenshot
+- Detects players in pages and iframes, including MP4, WebM, HLS, and DASH streams.
+- Prioritizes playing players, associated streams, and recently detected URLs.
+- Blocks popups, unsolicited cross-site navigation, and selected advertising scripts.
+- Supports direct playback on Android TV and Google TV through SimpleCast TV.
 
 <img src="docs/images/simplecast.png" alt="SimpleCast Android interface" width="320">
 
-## Getting started
+## Install
 
-Install [SimpleCast.apk](dist/SimpleCast.apk) on Android 8.0 or later. Google Play Services and an up-to-date Android System WebView are required. Connect your phone and Chromecast to the same Wi-Fi network.
+| APK | Version | Device |
+| --- | --- | --- |
+| [SimpleCast.apk](dist/SimpleCast.apk) | 0.3.1 | Android phone, Android 8.0+ |
+| [SimpleCast-TV.apk](dist/SimpleCast-TV.apk) | 0.1.1 | Android TV or Google TV, Android 8.0+ |
 
-1. Open a web page in the app or share its URL from your browser.
-2. Start the video if needed, then select **Scanner les lecteurs**.
-3. Choose a player and stream, tap **Caster**, and select your Chromecast.
+Keep both devices on the same local network. The phone app requires an up-to-date Android System WebView; standard Chromecast playback also requires Google Play Services.
+
+## Use
+
+1. Open a video page in the phone app, or share its URL from your browser.
+2. Start the video, then tap **Scanner les lecteurs** or **Lecteurs détectés**.
+3. Choose the playing player and its stream.
+
+**Android TV / Google TV:** Install and open SimpleCast TV on the TV. On the phone, tap **TV**, select the receiver, and enter its displayed code. After choosing a stream, tap **Lire sur SimpleCast TV**. The TV downloads the video directly, without relaying it through the phone. Once playback starts, you can turn off the phone's screen. Keep the TV app open. To switch receivers or reconnect after reopening it, disconnect through **TV**, then select the receiver again.
+
+**Chromecast:** Tap **Caster** and choose your Chromecast. The optional **Relayer par le téléphone** setting is off by default; enabling it routes video through the phone and uses more battery.
 
 A three-player demo is available under **? → Démonstration**.
 
 ## Limitations
 
-DRM, WebRTC, transcoding, and streams requiring cookies or custom headers are not supported. Playback depends on your Chromecast's supported formats and the streaming server. Website ads remain visible.
+DRM, WebRTC, and transcoding are not supported. Playback depends on the server and device codecs. SimpleCast TV supports additional stream types and website request information that standard Cast cannot always handle. Browser cookies and account authorization headers are not transferred. Live links and temporary stream tokens can expire; reopen the player and scan again if needed. The popup filter is not a full ad blocker.
 
 ## Build
 
-Requires JDK 17+ and Android SDK 36.
+Requires JDK 17+ and Android SDK 36. Generate both release APKs in `dist/`, with unit tests and Android Lint checks:
 
 ```sh
-./gradlew assembleRelease
+sh ./gradlew packageRelease
 ```
 
-On Windows, use `gradlew.bat assembleRelease`. The APK is generated in `app/build/outputs/apk/release/`. Local builds use the development signing key.
+On Windows, use `gradlew.bat packageRelease`. Builds use the local development signing key. See [development notes](docs/DEVELOPMENT.md) for project structure and additional tests, and [the changelog](CHANGELOG.md) for recent changes.
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Third-party components retain their own licenses, including [NanoHTTPD](app/src/main/assets/licenses/nanohttpd.txt) and [AndroidX Media3](tv/src/main/assets/licenses/media3.txt).
 
 **Note: The codebase and user interface are in French.**

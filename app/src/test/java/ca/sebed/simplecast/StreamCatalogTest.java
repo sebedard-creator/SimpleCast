@@ -4,6 +4,31 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class StreamCatalogTest {
+    @Test public void prioritizesExactPlayerThenLatestSignedUrlWithoutChangingTokens() {
+        StreamCatalog catalog = new StreamCatalog();
+        String frame = "https://player.test/embed";
+        var old = catalog.add("https://cdn.test/live.m3u8?token=old", "", frame, "video-1", "Game", true);
+        var renewed = catalog.add("https://cdn.test/live.m3u8?token=new%2Ftoken", "", frame, "video-1", "Game", true);
+        var guess = catalog.add("https://cdn.test/unknown.m3u8", "", frame, "", "Network", true);
+        catalog.add("https://cdn.test/unrelated.mp4", "", "https://other.test/", "video-1", "Other", false);
+        assertEquals(java.util.List.of(renewed, old, guess), catalog.ranked(frame, "video-1"));
+        assertEquals("https://cdn.test/live.m3u8?token=new%2Ftoken", renewed.url);
+    }
+    @Test public void capacityKeepsRenewedUrlsAndRecentlyUsedStreams() {
+        StreamCatalog catalog = new StreamCatalog();
+        for (int i = 0; i < 150; i++) catalog.add("https://cdn.test/" + i + ".m3u8", "", "", "", "", true);
+        catalog.add("https://cdn.test/0.m3u8", "", "", "", "", true);
+        var fresh = catalog.add("https://cdn.test/latest.m3u8", "", "", "", "", true);
+        assertNotNull(fresh);
+        assertEquals(150, catalog.size());
+        assertEquals(fresh, catalog.ranked(null, null).get(0));
+        assertTrue(catalog.all().stream().anyMatch(s -> s.url.endsWith("/0.m3u8")));
+        assertFalse(catalog.all().stream().anyMatch(s -> s.url.endsWith("/1.m3u8")));
+    }
+    @Test public void displaysHlsForMixedCaseMimeTypes() {
+        StreamCatalog catalog = new StreamCatalog();
+        assertEquals("HLS", catalog.add("https://cdn.test/live.m3u8", "application/x-mpegURL", "", "", "", true).format());
+    }
     @Test public void recognizesSignedUrlsWithoutMatchingTokensOrSegments() {
         assertEquals("application/x-mpegURL", StreamCatalog.mediaMime("https://cdn.test/live.M3U8?token=secret&expires=1", ""));
         assertNull(StreamCatalog.mediaMime("https://cdn.test/image?next=movie.mp4", "image/png"));

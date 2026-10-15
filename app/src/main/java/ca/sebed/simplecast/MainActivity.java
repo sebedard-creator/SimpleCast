@@ -38,6 +38,7 @@ import androidx.webkit.JavaScriptReplyProxy;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 import com.google.android.gms.cast.MediaInfo;
+import com.google.android.gms.cast.MediaError;
 import com.google.android.gms.cast.MediaLoadRequestData;
 import com.google.android.gms.cast.MediaMetadata;
 import com.google.android.gms.cast.MediaStatus;
@@ -69,6 +70,9 @@ public final class MainActivity extends AppCompatActivity {
     private final StreamCatalog catalog = new StreamCatalog();
     private final Map<String, Player> players = new LinkedHashMap<>();
     private final Map<String, JavaScriptReplyProxy> frames = new LinkedHashMap<>();
+    private final Map<String, Map<String, String>> requestContexts = new LinkedHashMap<>(32, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, Map<String, String>> eldest) { return size() > 512; }
+    };
     private volatile String token;
     private String detector;
     private boolean advancedDetection;
@@ -84,7 +88,15 @@ public final class MainActivity extends AppCompatActivity {
     private RemoteMediaClient remote;
     private StreamCatalog.Stream pending;
     private boolean pendingLive;
+    private boolean pendingRelay;
     private int loadGeneration;
+    private boolean loading;
+    private boolean loadingWithRelay;
+    private String loadingUrl;
+    private Runnable loadWatchdog;
+    private NativeTvClient nativeTv;
+    private boolean nativePlayback, nativePaused;
+    private int nativeGeneration;
 
     private static final class Player {
         String id, frame, label;
@@ -94,7 +106,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private final RemoteMediaClient.Callback mediaCallback = new RemoteMediaClient.Callback() {
-        @Override public void onStatusUpdated() { updateMediaControls(); }
+        @Override public void onStatusUpdated() { updateMediaControls(); observePlayback(); }
+        @Override public void onMediaError(MediaError error) {
+            android.util.Log.w("SimpleCast", "Cast media error" + mediaErrorDetails(error));
+            if (loading) loadFailed("Le Chromecast a refusé la lecture du flux." + mediaErrorDetails(error), loadGeneration);
+        }
     };
     private final SessionManagerListener<CastSession> sessionListener = new SessionManagerListener<>() {
         @Override public void onSessionStarted(CastSession session, String id) { connected(session); }
@@ -102,7 +118,8 @@ public final class MainActivity extends AppCompatActivity {
         @Override public void onSessionStartFailed(CastSession session, int error) { castFailed(error); }
         @Override public void onSessionResumeFailed(CastSession session, int error) { castFailed(error); }
         @Override public void onSessionEnded(CastSession session, int error) {
-            pending = null; loadGeneration++; attachRemote(null); status.setText("Chromecast déconnecté");
+            pending = null; cancelLoad(); RelayService.stop(MainActivity.this);
+            attachRemote(null); if (!nativePlayback) status.setText("Chromecast déconnecté");
         }
         @Override public void onSessionSuspended(CastSession session, int reason) {
             attachRemote(null); status.setText("Connexion Chromecast interrompue");
@@ -117,6 +134,7 @@ public final class MainActivity extends AppCompatActivity {
         detector = asset("detector.js");
         createLayout();
         configureBrowser();
+        nativeTv = new NativeTvClient(this);
         try {
             castContext = CastContext.getSharedInstance(this);
             CastButtonFactory.setUpMediaRouteButton(this, castButton);
@@ -151,6 +169,8 @@ public final class MainActivity extends AppCompatActivity {
         castButton = new MediaRouteButton(this); castButton.setContentDescription("Choisir un Chromecast");
         castButton.setAlwaysVisible(true);
         header.addView(castButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        Button tv = button("TV"); tv.setContentDescription("Connexion SimpleCast TV");
+        tv.setOnClickListener(v -> chooseNativeTv()); header.addView(tv, new LinearLayout.LayoutParams(dp(48), dp(48)));
         Button help = button("?"); help.setContentDescription("Aide et limites");
         help.setOnClickListener(v -> showHelp()); header.addView(help, new LinearLayout.LayoutParams(dp(48), dp(48)));
         root.addView(header);
@@ -183,11 +203,13 @@ public final class MainActivity extends AppCompatActivity {
         actionRow.addView(reload, new LinearLayout.LayoutParams(dp(52), dp(50))); bottom.addView(actionRow);
         controls = row();
         playPause = button("Pause"); playPause.setOnClickListener(v -> {
+            if (nativePlayback) { nativeCommand(nativePaused ? "play" : "pause"); return; }
             if (remote != null) { if (remote.isPlaying()) remote.pause(); else remote.play(); }
         });
         controls.addView(playPause, new LinearLayout.LayoutParams(0, dp(46), 1));
         Button stop = button("Arrêter"); stop.setOnClickListener(v -> {
-            pending = null; loadGeneration++;
+            if (nativePlayback) { nativeCommand("stop"); return; }
+            pending = null; cancelLoad(); RelayService.stop(this);
             if (remote != null) remote.stop();
         });
         controls.addView(stop, new LinearLayout.LayoutParams(0, dp(46), 1));
@@ -201,9 +223,15 @@ public final class MainActivity extends AppCompatActivity {
         settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
         settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(true);
+        // Without multiple-window handling, target=_blank can replace the video page.
+        settings.setSupportMultipleWindows(true);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         CookieManager.getInstance().setAcceptThirdPartyCookies(browser, true);
         browser.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onCreateWindow(WebView view, boolean dialog, boolean gesture, android.os.Message result) {
+                return false; // Refuse both automatic popups and popunders triggered by a play click.
+            }
             @Override public void onProgressChanged(WebView view, int value) {
                 progress.setProgress(value); progress.setVisibility(value == 100 ? View.GONE : View.VISIBLE);
             }
@@ -214,7 +242,7 @@ public final class MainActivity extends AppCompatActivity {
             (view, message, origin, main, reply) -> receive(message.getData(), reply));
         browser.setWebViewClient(new WebViewClient() {
             @Override public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
-                catalog.clear(); players.clear(); frames.clear(); pending = null;
+                catalog.clear(); players.clear(); frames.clear(); requestContexts.clear(); pending = null;
                 address.setText(url.equals(HOME_URL) ? "" : url); updateDetection();
                 // A direct media link may never create an HTML document.
                 catalog.add(url, "", url, "", "Lien vidéo direct", null); updateDetection();
@@ -227,20 +255,27 @@ public final class MainActivity extends AppCompatActivity {
                 }
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return !StreamCatalog.validUrl(request.getUrl().toString());
+                return BrowserPolicy.blockedNavigation(view.getUrl(), request.getUrl().toString(),
+                    request.isForMainFrame(), request.hasGesture(), request.isRedirect());
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
+                if (BrowserPolicy.blockedResource(url))
+                    return new WebResourceResponse("text/plain", "UTF-8", new ByteArrayInputStream(new byte[0]));
                 if (url.equals(HOME_URL) || url.equals(DEMO_URL) || url.equals("https://simplecast.test/embedded-demo")) {
                     return new WebResourceResponse("text/html", "UTF-8", new ByteArrayInputStream(
                         asset(url.equals(HOME_URL) ? "welcome.html" : url.equals(DEMO_URL) ? "demo.html" : "embedded-demo.html").getBytes(StandardCharsets.UTF_8)));
                 }
-                if (StreamCatalog.mediaMime(url, "") != null) {
+                Map<String, String> observed = new LinkedHashMap<>(request.getRequestHeaders());
+                boolean media = StreamCatalog.mediaMime(url, "") != null;
+                boolean hasOrigin = observed.keySet().stream().anyMatch(key -> key.equalsIgnoreCase("origin"));
+                if (media || hasOrigin) {
                     String generation = token;
                     String referer = request.getRequestHeaders().getOrDefault("Referer", "");
                     handler.post(() -> {
                         if (!generation.equals(token) || isFinishing() || isDestroyed()) return;
-                        catalog.add(url, "", referer, "", "Flux réseau", null); updateDetection();
+                        requestContexts.put(url, observed);
+                        if (media) { catalog.add(url, "", referer, "", "Flux réseau", null); updateDetection(); }
                     });
                 }
                 return null; // Observe requests without replacing responses or breaking the page.
@@ -327,23 +362,28 @@ public final class MainActivity extends AppCompatActivity {
 
     private void updateDetection() {
         scanner.setText(players.isEmpty() ? "Scanner les lecteurs" : "Lecteurs détectés · " + players.size());
-        if (remote == null || !remote.hasMediaSession())
+        if (!nativePlayback && !loading && (remote == null || !remote.hasMediaSession()))
             status.setText(players.size() + " lecteur(s) · " + catalog.size() + " flux détecté(s)");
     }
     private void scanAndShow() {
+        // A changed iframe leaves its former player in native memory until the next scan.
+        // Only live documents can answer this fresh request.
+        if (advancedDetection) players.clear();
         frames.values().forEach(reply -> command(reply, "scan", ""));
         if (advancedDetection) browser.evaluateJavascript("window.__simpleCastControl && window.__simpleCastControl({action:'scan'})", null);
         else fallbackScan();
-        handler.postDelayed(() -> { if (!isFinishing() && !isDestroyed()) showPlayers(); }, 300);
+        handler.postDelayed(() -> { if (!isFinishing() && !isDestroyed()) showPlayers(); }, 700);
     }
     private AlertDialog showPlayers() {
         List<Player> snapshot = new ArrayList<>(players.values());
+        snapshot.sort(java.util.Comparator.<Player>comparingInt(p -> p.playing ? 0 : 1)
+            .thenComparing(java.util.Comparator.comparingLong((Player p) -> (long) p.width * p.height).reversed()));
         if (snapshot.isEmpty()) { showStreams(null); return null; }
         List<String> labels = new ArrayList<>();
         for (int i = 0; i < snapshot.size(); i++) {
             Player p = snapshot.get(i);
-            labels.add((i + 1) + ". " + p.label + "\n" + host(p.frame)
-                + (p.height > 0 ? " · " + p.width + " × " + p.height : "") + (p.playing ? " · en lecture" : ""));
+            labels.add((i + 1) + ". " + (p.playing ? "▶ En lecture · " : "") + p.label + "\n" + host(p.frame)
+                + (p.height > 0 ? " · " + p.width + " × " + p.height : ""));
         }
         labels.add("Tous les flux détectés (" + catalog.size() + ")");
         return new AlertDialog.Builder(this).setTitle("Choisis un lecteur")
@@ -355,10 +395,7 @@ public final class MainActivity extends AppCompatActivity {
             }).setNegativeButton("Fermer", null).show();
     }
     private void showStreams(Player player) {
-        List<StreamCatalog.Stream> list = new ArrayList<>();
-        for (StreamCatalog.Stream stream : catalog.all()) {
-            if (player == null || stream.matches(player.frame, player.id)) list.add(stream);
-        }
+        List<StreamCatalog.Stream> list = catalog.ranked(player == null ? null : player.frame, player == null ? null : player.id);
         if (list.isEmpty()) {
             new AlertDialog.Builder(this).setTitle("Le flux n’est pas encore visible")
                 .setMessage("Lance la vidéo dans la page, puis scanne à nouveau. Certains lecteurs ne chargent le flux qu’après un clic.\n\n"
@@ -368,10 +405,15 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         List<String> labels = new ArrayList<>();
+        boolean exactSeen = false, possibleSeen = false;
         for (StreamCatalog.Stream stream : list) {
-            labels.add(stream.format() + (Boolean.TRUE.equals(stream.live) ? " · en direct" : "")
+            boolean exact = player != null && stream.exactMatch(player.frame, player.id);
+            boolean newest = exact ? !exactSeen : !possibleSeen;
+            if (exact) exactSeen = true; else possibleSeen = true;
+            labels.add(stream.format() + (Boolean.TRUE.equals(stream.live) ? " · en direct" : "") + (newest ? " · repéré le plus récemment" : "")
                 + "\n" + displayUrl(stream.url)
-                + (player != null && !stream.exactMatch(player.frame, player.id) ? "\nFlux du même cadre · association possible" : ""));
+                + (player == null ? "\nLecteur : " + host(stream.frame)
+                    : exact ? "\nAssocié à ce lecteur" : "\nFlux du même cadre · association possible"));
         }
         new AlertDialog.Builder(this).setTitle(player == null ? "Choisis un flux vidéo" : player.label)
             .setItems(labels.toArray(new String[0]), (d, index) -> confirmStream(list.get(index), player))
@@ -379,13 +421,30 @@ public final class MainActivity extends AppCompatActivity {
     }
     private void showPlayersIfAvailable() { if (!players.isEmpty()) showPlayers(); }
     private void confirmStream(StreamCatalog.Stream stream, Player player) {
+        boolean useTv = nativeTv != null && nativeTv.paired();
         CheckBox live = new CheckBox(this); live.setText("Flux en direct");
-        live.setChecked(Boolean.TRUE.equals(stream.live)); live.setPadding(dp(22), dp(10), dp(22), dp(10));
+        live.setChecked(Boolean.TRUE.equals(stream.live));
+        live.setVisibility(useTv ? View.GONE : View.VISIBLE);
+        CheckBox relay = new CheckBox(this); relay.setText("Relayer par le téléphone");
+        relay.setChecked(false);
+        relay.setVisibility(useTv || stream.format().equals("DASH") ? View.GONE : View.VISIBLE);
+        LinearLayout options = column(); options.setPadding(dp(20), dp(6), dp(20), dp(10));
+        options.addView(live); options.addView(relay);
+        TextView relayHint = new TextView(this); relayHint.setText("En mode relais, garde ton téléphone connecté au Wi-Fi.");
+        relayHint.setTextSize(13); relayHint.setPadding(dp(6), dp(4), dp(6), 0);
+        relayHint.setVisibility(relay.isChecked() ? View.VISIBLE : View.GONE); options.addView(relayHint);
+        if (useTv) {
+            TextView direct = new TextView(this); direct.setText("La télé télécharge la vidéo. Tu peux éteindre l’écran du téléphone.");
+            direct.setPadding(dp(6), dp(4), dp(6), 0); options.addView(direct);
+        }
+        relay.setOnCheckedChangeListener((button, checked) -> relayHint.setVisibility(checked ? View.VISIBLE : View.GONE));
         new AlertDialog.Builder(this).setTitle("Envoyer à la télé")
-            .setMessage(stream.format() + " · " + displayUrl(stream.url))
-            .setView(live).setPositiveButton("Caster", (d, w) -> {
+            .setMessage((useTv ? nativeTv.name() + "\n" : "") + stream.format() + " · " + displayUrl(stream.url))
+            .setView(options).setPositiveButton(useTv ? "Lire sur SimpleCast TV" : "Caster", (d, w) -> {
+                if (useTv) { sendNativeTv(stream); return; }
+                nativePlayback = false; nativeGeneration++;
                 if (castContext == null) { toast("Google Play Services est requis pour Chromecast."); return; }
-                pending = stream; pendingLive = live.isChecked();
+                pending = stream; pendingLive = live.isChecked(); pendingRelay = relay.isChecked();
                 CastSession session = castContext.getSessionManager().getCurrentCastSession();
                 if (session != null && session.isConnected()) connected(session);
                 else {
@@ -399,30 +458,219 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void connected(CastSession session) {
+        if (nativePlayback) return;
         attachRemote(session.getRemoteMediaClient());
         if (pending == null || remote == null) return;
         StreamCatalog.Stream stream = pending; pending = null;
-        MediaMetadata metadata = new MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE);
-        metadata.putString(MediaMetadata.KEY_TITLE, stream.title.isEmpty() ? "SimpleCast" : stream.title);
-        MediaInfo info = new MediaInfo.Builder(stream.url).setContentType(stream.mime)
-            .setStreamType(pendingLive ? MediaInfo.STREAM_TYPE_LIVE : MediaInfo.STREAM_TYPE_BUFFERED)
-            .setMetadata(metadata).build();
-        int generation = ++loadGeneration;
-        status.setText("Chargement sur le Chromecast…");
-        remote.load(new MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
-            .setCurrentTime(MediaLoadRequestData.PLAY_POSITION_UNASSIGNED).build()).setResultCallback(result -> {
-                if (generation != loadGeneration || isFinishing() || isDestroyed()) return;
-                if (result.getStatus().isSuccess()) {
+        cancelLoad(); int generation = loadGeneration; boolean live = pendingLive;
+        loading = true; loadingUrl = null; loadingWithRelay = pendingRelay;
+        if (pendingRelay) {
+            status.setText("Préparation du relais par le téléphone…");
+            Map<String, String> headers = new LinkedHashMap<>(requestContexts.getOrDefault(stream.url, Collections.emptyMap()));
+            if (headers.keySet().stream().noneMatch(key -> key.equalsIgnoreCase("user-agent")))
+                headers.put("User-Agent", browser.getSettings().getUserAgentString());
+            RelayService.prepare(this, stream.url, stream.frame, headers, stream.format().equals("HLS"), new RelayService.Ready() {
+                @Override public void ready(String url) {
+                    if (generation != loadGeneration || isFinishing() || isDestroyed()) { RelayService.stop(MainActivity.this, url); return; }
+                    sendMedia(stream, url, live, generation);
+                }
+                @Override public void failed(String reason) { loadFailed(reason, generation); }
+            });
+        } else {
+            RelayService.stop(this); sendMedia(stream, stream.url, live, generation);
+        }
+    }
+    private void chooseNativeTv() {
+        if (nativeTv == null) return;
+        if (nativeTv.paired()) {
+            new AlertDialog.Builder(this).setTitle("SimpleCast TV")
+                .setMessage("Connecté à " + nativeTv.name() + ". La télé télécharge elle-même la vidéo.")
+                .setPositiveButton("Fermer", null)
+                .setNegativeButton("Déconnecter le téléphone", (d, w) -> {
+                    nativeGeneration++; nativePlayback = false; nativeTv.disconnect(); updateMediaControls();
+                    status.setText("SimpleCast TV déconnecté");
+                }).show();
+            return;
+        }
+        List<NativeTvClient.Target> targets = new ArrayList<>();
+        List<String> labels = new ArrayList<>(); labels.add("Saisir l’adresse affichée sur la télé…");
+        var adapter = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, labels);
+        AlertDialog chooser = new AlertDialog.Builder(this).setTitle("Ouvre SimpleCast TV sur la télé")
+            .setAdapter(adapter, (dialog, index) -> {
+                if (index == 0) manualNativeTv(); else pairNativeTv(targets.get(index - 1));
+            }).setNegativeButton("Annuler", null).create();
+        chooser.setOnDismissListener(d -> nativeTv.stopDiscovery()); chooser.show();
+        nativeTv.discover(found -> {
+            targets.clear(); targets.addAll(found); labels.clear(); labels.add("Saisir l’adresse affichée sur la télé…");
+            found.forEach(target -> labels.add(target.name)); adapter.notifyDataSetChanged();
+        });
+    }
+    private void manualNativeTv() {
+        EditText input = new EditText(this); input.setSingleLine(); input.setHint("192.168.1.25:12345");
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        new AlertDialog.Builder(this).setTitle("Adresse de SimpleCast TV").setView(input)
+            .setPositiveButton("Continuer", (d, w) -> {
+                try { pairNativeTv(NativeTvClient.manual(input.getText().toString())); }
+                catch (Exception error) { toast("Entre l’adresse IP:port affichée dans SimpleCast TV."); }
+            }).setNegativeButton("Annuler", null).show();
+    }
+    private void pairNativeTv(NativeTvClient.Target target) {
+        EditText input = new EditText(this); input.setSingleLine(); input.setHint("Code à 6 chiffres");
+        input.setInputType(InputType.TYPE_CLASS_NUMBER); input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(6)});
+        new AlertDialog.Builder(this).setTitle(target.name).setMessage("Entre le code affiché dans SimpleCast TV.")
+            .setView(input).setPositiveButton("Connecter", (d, w) -> {
+                String pin = input.getText().toString();
+                if (!pin.matches("[0-9]{6}")) { toast("Le code doit contenir 6 chiffres."); return; }
+                status.setText("Connexion à SimpleCast TV…");
+                nativeTv.pair(target, pin, new NativeTvClient.Result() {
+                    @Override public void complete(JSONObject response) { status.setText("Connecté à " + nativeTv.name()); toast("Choisis maintenant ton lecteur et son flux."); }
+                    @Override public void failed(String message) { status.setText(message); pairNativeTv(target); }
+                });
+            }).setNegativeButton("Annuler", null).show();
+    }
+    private void sendNativeTv(StreamCatalog.Stream stream) {
+        pending = null; cancelLoad(); RelayService.stop(this); attachRemote(null);
+        nativePlayback = true; nativePaused = false; int generation = ++nativeGeneration;
+        updateMediaControls(); status.setText("Chargement sur SimpleCast TV…");
+        try {
+            Map<String, String> context = PlaybackContext.headers(stream.frame,
+                requestContexts.getOrDefault(stream.url, Collections.emptyMap()), browser.getSettings().getUserAgentString());
+            JSONObject body = new JSONObject().put("url", stream.url).put("mime", stream.mime).put("headers", new JSONObject(context));
+            nativeTv.command("load", body, new NativeTvClient.Result() {
+                @Override public void complete(JSONObject response) { pollNativeTv(generation, android.os.SystemClock.uptimeMillis() + 45000); }
+                @Override public void failed(String message) { nativeFailure(message, generation); }
+            });
+        } catch (Exception error) { nativeFailure("Impossible de préparer ce flux.", generation); }
+    }
+    private void pollNativeTv(int generation, long deadline) {
+        if (generation != nativeGeneration || !nativePlayback || isFinishing() || isDestroyed()) return;
+        nativeTv.command("status", new JSONObject(), new NativeTvClient.Result() {
+            @Override public void complete(JSONObject response) {
+                if (generation != nativeGeneration) return;
+                String state = response.optString("state");
+                if (state.equals("playing")) {
+                    android.util.Log.i("SimpleCast", "Native TV playback confirmed; phone relay disabled");
                     frames.values().forEach(reply -> command(reply, "pause", ""));
                     browser.evaluateJavascript("document.querySelectorAll('video').forEach(v=>v.pause())", null);
-                    status.setText("Vidéo envoyée au Chromecast"); updateMediaControls();
+                    status.setText("Lecture directe sur SimpleCast TV");
+                    nativePaused = false; updateMediaControls();
+                } else if (state.equals("error")) nativeFailure("La télé a refusé la lecture : " + response.optString("error"), generation);
+                else if (android.os.SystemClock.uptimeMillis() >= deadline) nativeFailure("SimpleCast TV n’a pas confirmé le démarrage de la vidéo après 45 secondes.", generation);
+                else handler.postDelayed(() -> pollNativeTv(generation, deadline), 1000);
+            }
+            @Override public void failed(String message) { nativeFailure(message, generation); }
+        });
+    }
+    private void nativeFailure(String message, int generation) {
+        if (generation != nativeGeneration || isFinishing() || isDestroyed()) return;
+        android.util.Log.w("SimpleCast", message);
+        nativeGeneration++; status.setText("Échec de lecture sur SimpleCast TV");
+        new AlertDialog.Builder(this).setTitle("SimpleCast TV").setMessage(message).setPositiveButton("OK", null).show();
+    }
+    private void nativeCommand(String action) {
+        int generation = ++nativeGeneration;
+        nativeTv.command(action, new JSONObject(), new NativeTvClient.Result() {
+            @Override public void complete(JSONObject response) {
+                if (generation != nativeGeneration) return;
+                if (action.equals("stop")) { nativePlayback = false; status.setText("Lecture arrêtée sur SimpleCast TV"); }
+                else { nativePaused = action.equals("pause"); status.setText(nativePaused ? "SimpleCast TV · en pause" : "Lecture sur SimpleCast TV"); }
+                updateMediaControls();
+            }
+            @Override public void failed(String message) { nativeFailure(message, generation); }
+        });
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        if (nativeTv == null || !nativeTv.paired()) return;
+        int generation = nativeGeneration;
+        nativeTv.command("status", new JSONObject(), new NativeTvClient.Result() {
+            @Override public void complete(JSONObject response) {
+                if (generation != nativeGeneration) return;
+                String state = response.optString("state");
+                nativePlayback = state.equals("playing") || state.equals("paused") || state.equals("loading");
+                nativePaused = state.equals("paused"); updateMediaControls();
+                if (nativePlayback) status.setText("SimpleCast TV · " + (nativePaused ? "en pause" : state.equals("loading") ? "chargement" : "lecture directe"));
+            }
+            @Override public void failed(String message) { if (generation == nativeGeneration) status.setText(message); }
+        });
+    }
+    private void sendMedia(StreamCatalog.Stream stream, String url, boolean live, int generation) {
+        if (generation != loadGeneration) { RelayService.stop(this, url); return; }
+        loadingUrl = url;
+        android.util.Log.i("SimpleCast", "Cast load: host=" + host(url) + ", mime=" + stream.mime
+            + ", live=" + live + ", relay=" + loadingWithRelay);
+        if (remote == null) { loadFailed("La connexion au Chromecast a été interrompue.", generation); RelayService.stop(this, url); return; }
+        MediaMetadata metadata = new MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE);
+        metadata.putString(MediaMetadata.KEY_TITLE, stream.title.isEmpty() ? "SimpleCast" : stream.title);
+        MediaInfo info = new MediaInfo.Builder(url).setContentType(stream.mime)
+            .setStreamType(live ? MediaInfo.STREAM_TYPE_LIVE : MediaInfo.STREAM_TYPE_BUFFERED)
+            .setMetadata(metadata).build();
+        status.setText("Chargement sur le Chromecast…");
+        loadWatchdog = () -> {
+            if (loading && generation == loadGeneration) {
+                loadFailed("Le Chromecast n’a pas démarré la vidéo après 45 secondes.", generation);
+                if (remote != null) remote.stop();
+            }
+        };
+        handler.postDelayed(loadWatchdog, 45000);
+        remote.load(new MediaLoadRequestData.Builder().setMediaInfo(info).setAutoplay(true)
+            .setCurrentTime(MediaLoadRequestData.PLAY_POSITION_UNASSIGNED).build()).setResultCallback(result -> {
+                if (generation != loadGeneration || !loading || isFinishing() || isDestroyed()) return;
+                if (result.getStatus().isSuccess()) {
+                    observePlayback(); // An accepted load isn't proof that the receiver can play the media.
                 } else {
-                    status.setText("Le Chromecast n’a pas pu lire ce flux");
-                    new AlertDialog.Builder(this).setTitle("Lecture impossible")
-                        .setMessage("Essaie un autre flux. Le serveur peut exiger des cookies, bloquer Chromecast, ou utiliser un format incompatible.\n\nCode Cast : " + result.getStatus().getStatusCode())
-                        .setPositiveButton("OK", null).show();
+                    loadFailed("Le Chromecast n’a pas pu lire ce flux. Code Cast : " + result.getStatus().getStatusCode()
+                        + mediaErrorDetails(result.getMediaError()), generation);
                 }
             });
+    }
+    private void observePlayback() {
+        if (!loading || remote == null || remote.getMediaInfo() == null || loadingUrl == null
+            || !loadingUrl.equals(remote.getMediaInfo().getContentId())) return;
+        if (remote.isPlaying()) {
+            android.util.Log.i("SimpleCast", "Cast playback started: host=" + host(loadingUrl) + ", relay=" + loadingWithRelay);
+            loading = false; if (loadWatchdog != null) handler.removeCallbacks(loadWatchdog);
+            frames.values().forEach(reply -> command(reply, "pause", ""));
+            browser.evaluateJavascript("document.querySelectorAll('video').forEach(v=>v.pause())", null);
+            status.setText("Lecture sur le Chromecast" + (RelayService.isRelayUrl(loadingUrl) ? " · relais par le téléphone" : ""));
+        } else if (remote.getMediaStatus() != null && remote.getMediaStatus().getPlayerState() == MediaStatus.PLAYER_STATE_IDLE
+            && remote.getMediaStatus().getIdleReason() == MediaStatus.IDLE_REASON_ERROR) {
+            // The detailed LOAD result can arrive just after the IDLE status.
+            int generation = loadGeneration;
+            handler.postDelayed(() -> {
+                MediaStatus media = remote == null ? null : remote.getMediaStatus();
+                if (media != null && media.getPlayerState() == MediaStatus.PLAYER_STATE_IDLE
+                    && media.getIdleReason() == MediaStatus.IDLE_REASON_ERROR)
+                    loadFailed("Le Chromecast a rencontré une erreur de lecture.", generation);
+            }, 500);
+        }
+    }
+    private void loadFailed(String reason, int generation) {
+        if (generation != loadGeneration || !loading || isFinishing() || isDestroyed()) return;
+        android.util.Log.w("SimpleCast", reason);
+        String relayError = loadingWithRelay ? RelayService.lastError() : "";
+        String details = reason + (relayError.isEmpty() ? "" : "\n\n" + relayError);
+        boolean relayed = loadingWithRelay;
+        if (!relayed && loadingUrl != null) details += "\n\nSource : " + displayUrl(loadingUrl);
+        cancelLoad(); if (relayed) RelayService.stop(this);
+        status.setText("Le Chromecast n’a pas pu démarrer la vidéo");
+        new AlertDialog.Builder(this).setTitle("Lecture impossible")
+            .setMessage(details + "\n\n" + (relayed ? "Essaie un autre flux ou vérifie que le téléphone et la télé communiquent sur le même Wi-Fi."
+                : "En lecture directe, le Chromecast doit pouvoir ouvrir le flux sans le lecteur du site. Le serveur ou son format de diffusion peut être incompatible. Essaie un autre flux."))
+            .setPositiveButton("OK", null).show();
+    }
+    private static String mediaErrorDetails(MediaError error) {
+        if (error == null) return "";
+        StringBuilder details = new StringBuilder();
+        if (error.getType() != null) details.append("\nType : ").append(error.getType());
+        if (error.getReason() != null) details.append("\nRaison : ").append(error.getReason());
+        if (error.getDetailedErrorCode() != null) details.append("\nCode du récepteur : ").append(error.getDetailedErrorCode());
+        return details.toString();
+    }
+    private void cancelLoad() {
+        loadGeneration++; loading = false;
+        if (loadWatchdog != null) handler.removeCallbacks(loadWatchdog);
+        loadWatchdog = null;
     }
     private void attachRemote(RemoteMediaClient client) {
         if (remote != null) remote.unregisterCallback(mediaCallback);
@@ -431,6 +679,7 @@ public final class MainActivity extends AppCompatActivity {
         updateMediaControls();
     }
     private void updateMediaControls() {
+        if (nativePlayback) { controls.setVisibility(View.VISIBLE); playPause.setText(nativePaused ? "Lecture" : "Pause"); return; }
         MediaStatus media = remote == null ? null : remote.getMediaStatus();
         boolean idle = media == null || media.getPlayerState() == MediaStatus.PLAYER_STATE_IDLE;
         controls.setVisibility(remote != null && remote.hasMediaSession() && !idle ? View.VISIBLE : View.GONE);
@@ -439,7 +688,7 @@ public final class MainActivity extends AppCompatActivity {
             status.setText("Échec de lecture sur Chromecast. Essaie un autre flux.");
     }
     private void castFailed(int error) {
-        pending = null; status.setText("Connexion Chromecast impossible · " + error);
+        pending = null; cancelLoad(); RelayService.stop(this); status.setText("Connexion Chromecast impossible · " + error);
         toast("Vérifie que les deux appareils sont sur le même Wi-Fi.");
     }
     private void command(JavaScriptReplyProxy reply, String action, String id) {
@@ -447,14 +696,18 @@ public final class MainActivity extends AppCompatActivity {
         catch (Exception ignored) { }
     }
     private void showHelp() {
-        new AlertDialog.Builder(this).setTitle("SimpleCast · 0.1.1")
+        new AlertDialog.Builder(this).setTitle("SimpleCast · 0.3.0")
             .setMessage("1. Ouvre une page et lance sa vidéo.\n2. Scanne et choisis son lecteur.\n3. Choisis le flux, puis ton Chromecast.\n\n"
                 + "MP4, WebM, HLS et DASH, selon les formats de ton Chromecast. Une adresse blob: n’est pas un lien vidéo : l’appli cherche le manifeste derrière.\n\n"
-                + "Les lecteurs DRM, WebRTC, et les flux nécessitant des cookies ou en-têtes spéciaux ne sont pas pris en charge. Plusieurs lecteurs dans le même cadre peuvent rendre l’association des flux ambiguë.\n\n"
-                + "Aucune pub ni télémétrie ajoutée par l’appli. Les pages visitées gardent leurs propres publicités. Google Play Services assure la connexion Cast.")
+                + "Par défaut, le Chromecast reçoit l’URL et télécharge lui-même la vidéo. Le téléphone sert de télécommande. Aucun relais n’est activé automatiquement.\n\n"
+                + "Sur Android TV, installe et ouvre SimpleCast TV, puis utilise le bouton TV de cette appli pour les connecter. La télé lit directement la vidéo avec le contexte du site, sans relais par le téléphone.\n\n"
+                + "L’option facultative « Relayer par le téléphone » fait passer la vidéo par le téléphone et consomme davantage de batterie.\n\n"
+                + "Les lecteurs DRM, WebRTC et les codecs incompatibles ne sont pas pris en charge. Plusieurs lecteurs dans le même cadre peuvent rendre l’association des flux ambiguë.\n\n"
+                + "Les nouvelles fenêtres et les changements automatiques vers un autre site sont bloqués, ainsi que quelques scripts publicitaires connus. Les liens qui ouvrent un nouvel onglet sont aussi bloqués : colle leur URL en haut au besoin. Ce filtre ne remplace pas un bloqueur complet comme uBlock Origin.\n\n"
+                + "Aucune pub ni télémétrie ajoutée par l’appli. Google Play Services assure la connexion Cast.")
             .setPositiveButton("OK", null).setNeutralButton("Démonstration", (d, w) -> open(DEMO_URL))
             .setNegativeButton("Effacer les données Web", (d, w) -> {
-                pending = null; browser.stopLoading();
+                pending = null; cancelLoad(); RelayService.stop(this); browser.stopLoading();
                 CookieManager.getInstance().removeAllCookies(done -> {
                     CookieManager.getInstance().flush(); android.webkit.WebStorage.getInstance().deleteAllData();
                     browser.clearCache(true); browser.clearHistory(); open(HOME_URL);
@@ -473,6 +726,7 @@ public final class MainActivity extends AppCompatActivity {
     }
     @Override protected void onSaveInstanceState(Bundle out) { super.onSaveInstanceState(out); out.putString("page", browser.getUrl()); }
     @Override protected void onDestroy() {
+        if (nativeTv != null) nativeTv.close();
         handler.removeCallbacksAndMessages(null);
         if (castContext != null) castContext.getSessionManager().removeSessionManagerListener(sessionListener, CastSession.class);
         if (remote != null) remote.unregisterCallback(mediaCallback);
@@ -494,6 +748,6 @@ public final class MainActivity extends AppCompatActivity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private void toast(String value) { Toast.makeText(this, value, Toast.LENGTH_LONG).show(); }
     private String host(String value) { String host = Uri.parse(value).getHost(); return host == null ? "Page Web" : host; }
-    private String displayUrl(String value) { Uri url = Uri.parse(value); String path = url.getLastPathSegment(); return host(value) + " / " + truncate(path == null ? "vidéo" : path, 65); }
+    private String displayUrl(String value) { Uri url = Uri.parse(value); String path = url.getPath(); return host(value) + truncate(path == null || path.isEmpty() ? "/" : path, 140); }
     private static String truncate(String value, int max) { return value.length() <= max ? value : value.substring(0, max) + "…"; }
 }

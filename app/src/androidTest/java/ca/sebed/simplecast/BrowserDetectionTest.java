@@ -61,7 +61,7 @@ public class BrowserDetectionTest {
             try {
                 StreamCatalog catalog = (StreamCatalog) field("catalog");
                 assertEquals(3, catalog.size());
-                assertTrue(catalog.all().stream().anyMatch(s -> s.url.endsWith("Sintel.mp4")
+                assertTrue(catalog.all().stream().anyMatch(s -> s.url.endsWith("sintel_prog.mp4")
                     && s.frame.equals("https://simplecast.test/embedded-demo")
                     && s.exactMatch(s.frame, "video-1")));
             } catch (Exception exception) { throw new AssertionError(exception); }
