@@ -1,5 +1,7 @@
 # SimpleCast
 
+Cast compatible video streams to your TV, even when the website's player has no Cast button or disables casting.
+
 A lightweight Android app that finds video players on web pages and sends their streams to Chromecast or SimpleCast TV. No direct video URL required, no app ads, and no added analytics.
 
 - Detects players in pages and iframes, including MP4, WebM, HLS, and DASH streams.
