@@ -42,7 +42,17 @@ public class BrowserNavigationTest {
                     response.addHeader("Location", other + "/landing"); return response;
                 }
                 String html;
-                if (path.equals("/player-two")) html = "<video aria-label='Replacement player' src='/replacement.mp4'></video>";
+                if (path.equals("/probe-host")) html = "<meta name='viewport' content='width=device-width,initial-scale=1'><iframe id='probe-frame' src='/probe-frame' width='320' height='180'></iframe>";
+                else if (path.equals("/probe-frame")) html = "<button id='probe' style='width:200px;height:60px' onclick=\""
+                    + "var p=window.open('about:blank','_blank');window.probeOpened=!!p;if(p)p.close();window.clicked=true;\">Play</button>"
+                    + "<button id='escape' style='width:200px;height:60px' onclick=\"window.open('" + other + "/popup','_blank');window.escaped=true;\">Popup</button>"
+                    + "<script>var p=window.open('about:blank','_blank');window.automaticProbeOpened=!!p;if(p)p.close();</script>";
+                else if (path.equals("/pdf-host")) html = "<iframe id='pdf-frame' src='/pdf-probe'></iframe>";
+                else if (path.equals("/pdf-probe")) html = "<script>window.sandboxWarningCount=0;window.sandDetect=()=>window.sandboxWarningCount++;</script>"
+                    + "<object data='data:application/pdf;base64,aG1t' onerror='window.sandDetect()' width='1' height='1'></object>"
+                    + "<object data='data:application/pdf;base64,YmFk' onerror='window.normalPdfError=true' width='1' height='1'></object>"
+                    + "<video aria-label='Working player' src='/video.mp4'></video>";
+                else if (path.equals("/player-two")) html = "<video aria-label='Replacement player' src='/replacement.mp4'></video>";
                 else if (path.equals("/player")) html = "<video aria-label='Embedded player' src='/video.mp4'></video>"
                     + "<script>onmessage=()=>{top.location='" + other + "/takeover'};</script>";
                 else if (path.equals("/index")) html = "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -60,6 +70,16 @@ public class BrowserNavigationTest {
     }
     @After public void stop() { if (server != null) server.stop(); }
 
+    @Test public void zoomsInAndOutWithRealTwoFingerGestures() throws Exception {
+        load(page); await("document.readyState==='complete' && !!document.getElementById('normal')");
+        double initial = ((Number) evaluate("visualViewport.scale")).doubleValue();
+        pinch(0.09f, 0.30f);
+        await("visualViewport.scale>" + (initial * 1.5));
+        double enlarged = ((Number) evaluate("visualViewport.scale")).doubleValue();
+        pinch(0.30f, 0.09f);
+        await("visualViewport.scale<" + (enlarged * 0.8));
+        assertEquals("Zooming must preserve the page", page, currentUrl());
+    }
     @Test public void rejectsTouchPopupsAndIframeTakeoversWhileKeepingThePlayer() throws Exception {
         load(page); await("document.readyState==='complete' && !!document.getElementById('popup')");
         awaitPlayers();
@@ -76,6 +96,39 @@ public class BrowserNavigationTest {
         tap("normal"); awaitUrl(other + "/landing"); await("!!document.getElementById('landed')");
         load("http://127.0.0.1:" + server.getListeningPort() + "/redirect");
         awaitUrl(other + "/landing"); await("!!document.getElementById('landed')");
+    }
+    @Test public void ignoresOnlyTheKnownPdfProbeFailureInsideAnIframeAndKeepsTheVideo() throws Exception {
+        load("http://127.0.0.1:" + server.getListeningPort() + "/pdf-host");
+        await("!!document.getElementById('pdf-frame') && document.getElementById('pdf-frame').contentWindow.normalPdfError===true");
+        assertEquals("Ordinary PDF errors must still be delivered", true, evaluate("document.getElementById('pdf-frame').contentWindow.normalPdfError===true"));
+        assertEquals("The invalid sandbox probe must not replace the player", true, evaluate("document.getElementById('pdf-frame').contentWindow.sandboxWarningCount===0"));
+        awaitPlayers();
+        assertEquals(true, evaluate("!!document.getElementById('pdf-frame').contentDocument.querySelector('video')"));
+    }
+    @Test public void containsAutomaticAndClickedPopupsWithoutFetchingTheirDestinations() throws Exception {
+        load(page); await("document.readyState==='complete' && !!document.getElementById('popup')");
+        evaluate("localStorage.setItem('sndbxchckiborjforqp2',JSON.stringify({isSandboxed:true,expiresAt:Date.now()+3600000}));localStorage.setItem('unrelated-fixture','kept')");
+        String host = "http://127.0.0.1:" + server.getListeningPort() + "/probe-host";
+        load(host); await("!!(document.getElementById('probe-frame') && document.getElementById('probe-frame').contentDocument.getElementById('probe'))");
+        assertEquals(true, evaluate("localStorage.getItem('sndbxchckiborjforqp2')===null && localStorage.getItem('unrelated-fixture')==='kept'"));
+        await("document.getElementById('probe-frame').contentWindow.automaticProbeOpened===true");
+        tapFrame("probe"); await("document.getElementById('probe-frame').contentWindow.clicked===true");
+        assertEquals(true, evaluate("document.getElementById('probe-frame').contentWindow.probeOpened===true"));
+        tapFrame("escape"); await("document.getElementById('probe-frame').contentWindow.escaped===true");
+        assertEquals(host, currentUrl());
+        long deadline = SystemClock.uptimeMillis() + 5000; AtomicInteger count = new AtomicInteger();
+        do {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                try {
+                    Field field = MainActivity.class.getDeclaredField("blockedPopups"); field.setAccessible(true);
+                    count.set(((java.util.Set<?>) field.get(activity.getActivity())).size());
+                } catch (Exception error) { throw new AssertionError(error); }
+            });
+            if (count.get() == 0) break;
+            SystemClock.sleep(100);
+        } while (SystemClock.uptimeMillis() < deadline);
+        assertEquals("Contained windows must be released", 0, count.get());
+        assertEquals("No popup request may reach the local fixture server", 0, unwantedLoads.get());
     }
     @Test public void rescanDropsThePlayerFromAReplacedIframe() throws Exception {
         load(page); await("document.readyState==='complete' && !!document.getElementById('player')");
@@ -144,6 +197,48 @@ public class BrowserNavigationTest {
     }
     private void tap(String id) throws Exception {
         JSONArray bounds = (JSONArray) evaluate("(()=>{let r=document.getElementById('" + id + "').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()");
+        tapPoint(bounds);
+    }
+    private void tapFrame(String id) throws Exception {
+        JSONArray bounds = (JSONArray) evaluate("(()=>{let f=document.getElementById('probe-frame'),r=f.getBoundingClientRect(),b=f.contentDocument.getElementById('" + id + "').getBoundingClientRect();return [r.x+f.clientLeft+b.x+b.width/2,r.y+f.clientTop+b.y+b.height/2]})()");
+        tapPoint(bounds);
+    }
+    private void pinch(float from, float to) {
+        float[] frame = new float[4];
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            int[] location = new int[2]; browser.getLocationOnScreen(location);
+            frame[0] = location[0] + browser.getWidth() / 2f;
+            frame[1] = location[1] + browser.getHeight() / 2f;
+            frame[2] = browser.getWidth();
+        });
+        MotionEvent.PointerProperties[] properties = new MotionEvent.PointerProperties[2];
+        MotionEvent.PointerCoords[] points = new MotionEvent.PointerCoords[2];
+        for (int i = 0; i < 2; i++) {
+            properties[i] = new MotionEvent.PointerProperties();
+            properties[i].id = i; properties[i].toolType = MotionEvent.TOOL_TYPE_FINGER;
+            points[i] = new MotionEvent.PointerCoords();
+            points[i].y = frame[1]; points[i].pressure = 1; points[i].size = 1;
+            points[i].x = frame[0] + (i == 0 ? -1 : 1) * frame[2] * from;
+        }
+        long start = SystemClock.uptimeMillis();
+        sendTouch(start, MotionEvent.ACTION_DOWN, 1, properties, points);
+        sendTouch(start, MotionEvent.ACTION_POINTER_DOWN | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), 2, properties, points);
+        for (int step = 1; step <= 20; step++) {
+            SystemClock.sleep(20);
+            float gap = frame[2] * (from + (to - from) * step / 20f);
+            points[0].x = frame[0] - gap; points[1].x = frame[0] + gap;
+            sendTouch(start, MotionEvent.ACTION_MOVE, 2, properties, points);
+        }
+        sendTouch(start, MotionEvent.ACTION_POINTER_UP | (1 << MotionEvent.ACTION_POINTER_INDEX_SHIFT), 2, properties, points);
+        sendTouch(start, MotionEvent.ACTION_UP, 1, properties, points);
+    }
+    private void sendTouch(long start, int action, int count, MotionEvent.PointerProperties[] properties, MotionEvent.PointerCoords[] points) {
+        MotionEvent event = MotionEvent.obtain(start, SystemClock.uptimeMillis(), action, count, properties, points,
+            0, 0, 1, 1, 0, 0, android.view.InputDevice.SOURCE_TOUCHSCREEN, 0);
+        try { InstrumentationRegistry.getInstrumentation().sendPointerSync(event); }
+        finally { event.recycle(); }
+    }
+    private void tapPoint(JSONArray bounds) {
         float[] point = new float[2];
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             int[] location = new int[2]; browser.getLocationOnScreen(location);

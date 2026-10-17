@@ -16,6 +16,10 @@ Automatic sending refreshes live iframe players, prioritizes playing and visible
 
 The phone filters known ad hostnames locally using the bundled, unmodified AdAway hosts snapshot (CC BY 3.0; attribution in `app/src/main/assets/licenses/adaway.txt`). A document-start script hides explicitly named ad elements in all frames while preserving video and player containers. WebChromeClient suppresses JavaScript dialogs while filtering is enabled. The remembered menu switch disables hostname/cosmetic filtering and script-dialog suppression, then reloads the page; new-window blocking and automatic cross-site takeover protection remain active. The blocklist is bundled and is not downloaded at runtime.
 
+Some players use an invalid PDF object (`data:application/pdf;base64,aG1t`, the three bytes `hmm`) with `onerror="window.sandDetect()"` to check for iframe sandboxing. Android WebView lacks a PDF viewer and triggers this error even in an unrestricted frame. A document-start compatibility listener suppresses only this exact probe's error handler; actual sandbox permissions and ordinary media errors remain unchanged.
+
+Popup requests receive a detached WebView with scripting, network, file access, and content access disabled; all navigations and resource responses are blocked. It is never added to the UI, is limited to two instances, and is destroyed on close or after two seconds. This preserves blank-window probes and prevents some scripts from falling back to a top-level advertising redirect. Only the known ad-library cache entry for a failed popup probe is reset; cookies and unrelated site storage are preserved.
+
 ## Native playback context
 
 The phone sends the complete stream URL and observed referrer, origin, and user agent to the paired TV. An observed `X-Token` header is forwarded only for manifests on the stream's original HTTP origin, including its scheme and port. Redirects are handled explicitly to avoid sending that token to another origin; segment requests do not receive it. Browser cookies and account authorization headers stay in the browser.

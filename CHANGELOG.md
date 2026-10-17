@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.4
+
+- Enable two-finger pinch zoom in the phone browser without adding on-screen zoom buttons.
+
+## 0.4.3
+
+- Prevent a specific invalid-PDF sandbox probe from replacing otherwise working embedded video players in Android WebView.
+- Contain popup requests without displaying or fetching them, preventing popup blockers from redirecting the player page instead; bound and automatically release contained windows.
+- Reset only the known ad-library cache entry for failed popup probes, preserving unrelated site storage and actual sandbox restrictions.
+- Add real WebView coverage for PDF compatibility, automatic and clicked popup containment, and ordinary media errors.
+
 ## 0.4.2
 
 - Add a bundled AdAway hostname blocklist, cosmetic filtering of identifiable banners in pages and frames, and suppression of JavaScript advertising dialogs.

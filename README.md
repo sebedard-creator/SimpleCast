@@ -15,7 +15,7 @@ A lightweight Android browser that sends the video you are watching directly to 
 
 | APK | Version | Device |
 | --- | --- | --- |
-| [SimpleCast.apk](dist/SimpleCast.apk) | 0.4.2 | Android phone, Android 8.0+ |
+| [SimpleCast.apk](dist/SimpleCast.apk) | 0.4.4 | Android phone, Android 8.0+ |
 | [SimpleCast-TV.apk](dist/SimpleCast-TV.apk) | 0.1.2 | Android TV or Google TV, Android 8.0+ |
 
 Install SimpleCast TV on the TV and keep both devices on the same local network. The phone requires an up-to-date Android System WebView. Chromecast with Google TV is supported through the TV app; older Chromecast devices without app installation are not supported.
@@ -29,6 +29,8 @@ Install SimpleCast TV on the TV and keep both devices on the same local network.
 3. Tap **Envoyer à la télé**.
 
 The TV downloads the video directly. Once playback starts, you can turn off the phone's screen. Keep SimpleCast TV open on the TV. If the phone shows **Télé indisponible**, reopen the TV app and retry; this does not mean the video source is incompatible. Pause and stop controls appear on the phone during TV playback.
+
+Pinch with two fingers to zoom in on small links and zoom back out.
 
 Use **⋮ → Autre source vidéo** if a source fails or only plays audio. Tap the TV's name at the top to switch receivers. Help and a demo are available under **⋮ → Aide**.
 

@@ -56,12 +56,14 @@ public final class MainActivity extends AppCompatActivity {
     private final StreamCatalog catalog = new StreamCatalog();
     private final Map<String, Player> players = new LinkedHashMap<>();
     private final Map<String, JavaScriptReplyProxy> frames = new LinkedHashMap<>();
+    private final java.util.Set<WebView> blockedPopups = new java.util.HashSet<>();
     private final Map<String, Map<String, String>> requestContexts = new LinkedHashMap<>(32, 0.75f, true) {
         @Override protected boolean removeEldestEntry(Map.Entry<String, Map<String, String>> eldest) { return size() > 512; }
     };
     private volatile String token;
     private String detector;
     private String cleanup;
+    private String compatibility;
     private volatile boolean filterEnabled;
     private boolean advancedDetection;
     private WebView browser;
@@ -90,6 +92,7 @@ public final class MainActivity extends AppCompatActivity {
         super.onCreate(state);
         detector = asset("detector.js");
         cleanup = asset("cleanup.js");
+        compatibility = asset("browser-compat.js");
         BrowserPolicy.loadAdHosts(asset("ad-hosts.txt"));
         filterEnabled = getSharedPreferences("simplecast-browser", MODE_PRIVATE).getBoolean("ad-filter", true);
         createLayout();
@@ -163,16 +166,18 @@ public final class MainActivity extends AppCompatActivity {
     private void configureBrowser() {
         WebSettings settings = browser.getSettings();
         settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
+        settings.setSupportZoom(true); settings.setBuiltInZoomControls(true);
+        settings.setDisplayZoomControls(false); settings.setUseWideViewPort(true);
         settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(true);
-        // Without multiple-window handling, target=_blank can replace the video page.
+        // Contain new windows separately so failed popups cannot replace the video page.
         settings.setSupportMultipleWindows(true);
-        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         CookieManager.getInstance().setAcceptThirdPartyCookies(browser, true);
         browser.setWebChromeClient(new WebChromeClient() {
             @Override public boolean onCreateWindow(WebView view, boolean dialog, boolean gesture, android.os.Message result) {
-                return false; // Refuse both automatic popups and popunders triggered by a play click.
+                return containPopup(result);
             }
             @Override public boolean onJsAlert(WebView view, String url, String message, android.webkit.JsResult result) {
                 if (!filterEnabled) return false;
@@ -207,6 +212,7 @@ public final class MainActivity extends AppCompatActivity {
                 catalog.add(url, "", url, "", "Lien vidéo direct", null); updateDetection();
             }
             @Override public void onPageFinished(WebView view, String url) {
+                if (!advancedDetection) browser.evaluateJavascript(compatibility, null);
                 if (!advancedDetection && filterEnabled) browser.evaluateJavascript(cleanup, null);
                 if (advancedDetection) browser.evaluateJavascript("window.__simpleCastControl && window.__simpleCastControl({action:'scan'})", null);
                 else {
@@ -244,12 +250,39 @@ public final class MainActivity extends AppCompatActivity {
         newDetector();
     }
 
+    /** Keep popup probes functional without showing a window or loading its destination. */
+    private boolean containPopup(android.os.Message result) {
+        if (blockedPopups.size() >= 2 || !(result.obj instanceof WebView.WebViewTransport)) return false;
+        WebView popup = new WebView(this);
+        WebSettings settings = popup.getSettings();
+        settings.setJavaScriptEnabled(false); settings.setDomStorageEnabled(false);
+        settings.setAllowFileAccess(false); settings.setAllowContentAccess(false);
+        settings.setBlockNetworkLoads(true); settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        popup.setWebViewClient(new WebViewClient() {
+            @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) { return true; }
+            @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return new WebResourceResponse("text/plain", "UTF-8", new ByteArrayInputStream(new byte[0]));
+            }
+        });
+        popup.setWebChromeClient(new WebChromeClient() {
+            @Override public void onCloseWindow(WebView view) { handler.post(() -> closePopup(view)); }
+        });
+        popup.setDownloadListener((url, agent, disposition, mime, length) -> { });
+        blockedPopups.add(popup);
+        ((WebView.WebViewTransport) result.obj).setWebView(popup); result.sendToTarget();
+        handler.postDelayed(() -> closePopup(popup), 2000);
+        return true;
+    }
+    private void closePopup(WebView popup) {
+        if (!blockedPopups.remove(popup)) return;
+        popup.stopLoading(); popup.destroy();
+    }
     private androidx.webkit.ScriptHandler detectorHandle;
     private void newDetector() {
         token = UUID.randomUUID().toString();
         if (detectorHandle != null) detectorHandle.remove();
         if (advancedDetection) detectorHandle = WebViewCompat.addDocumentStartJavaScript(browser,
-            (filterEnabled ? cleanup + "\n" : "") + detector.replace("__SCAN_TOKEN__", token), Collections.singleton("*"));
+            compatibility + "\n" + (filterEnabled ? cleanup + "\n" : "") + detector.replace("__SCAN_TOKEN__", token), Collections.singleton("*"));
     }
 
     private void receive(String value, JavaScriptReplyProxy reply) {
@@ -574,7 +607,7 @@ public final class MainActivity extends AppCompatActivity {
         catch (Exception ignored) { }
     }
     private void showHelp() {
-        new AlertDialog.Builder(this).setTitle("SimpleCast · 0.4.2")
+        new AlertDialog.Builder(this).setTitle("SimpleCast · 0.4.4")
             .setMessage("1. Ouvre ton site de streaming.\n2. Lance la vidéo dans la page.\n3. Appuie sur Envoyer à la télé.\n\n"
                 + "Associe ta télé une première fois avec le bouton en haut. SimpleCast TV doit être ouvert sur la télé, sur le même réseau Wi-Fi.\n\n"
                 + "La télé télécharge la vidéo directement. Tu peux éteindre l’écran du téléphone après le démarrage.\n\n"
@@ -597,6 +630,7 @@ public final class MainActivity extends AppCompatActivity {
     @Override protected void onDestroy() {
         if (nativeTv != null) nativeTv.close();
         handler.removeCallbacksAndMessages(null);
+        new ArrayList<>(blockedPopups).forEach(this::closePopup);
         if (detectorHandle != null) detectorHandle.remove();
         browser.stopLoading(); browser.destroy(); super.onDestroy();
     }
