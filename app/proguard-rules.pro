@@ -1,1 +1,0 @@
--keep class ca.sebed.simplecast.CastOptionsProvider { *; }

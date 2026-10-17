@@ -4,11 +4,11 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const script = fs.readFileSync('app/src/main/assets/detector.js', 'utf8');
 
-function environment(videoList, frame = 'https://page.test/watch') {
+function environment(videoList, frame = 'https://page.test/watch', suppliedResponse = null) {
   const messages = [];
   const events = {};
   let mutation;
-  const response = new Response('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts\n', {
+  const response = suppliedResponse || new Response('#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nsegment.ts\n', {
     headers: { 'content-type': 'application/vnd.apple.mpegurl' }
   });
   Object.defineProperty(response, 'url', { value: 'https://cdn.test/manifest?token=A%2FB' });
@@ -38,9 +38,10 @@ function video(label, src = '', sources = []) {
   return {
     title: '', src, currentSrc: src, paused: true, duration: NaN, isConnected: true,
     videoWidth: 1920, videoHeight: 1080,
-    getAttribute: () => label,
+    getAttribute: name => name === 'src' ? src : name === 'aria-label' ? label : null,
     getBoundingClientRect: () => ({ width: 300, height: 169 }),
-    querySelectorAll: () => sources,
+    querySelectorAll: () => sources.map(source => ({...source,
+      getAttribute: name => name === 'src' ? (Object.hasOwn(source, 'rawSrc') ? source.rawSrc : source.src) : null})),
     addEventListener: (event, listener) => { listeners[event] = listener; },
     scrollIntoView() { this.scrolled = true; },
     play() { this.paused = false; listeners.play?.(); return Promise.resolve(); },
@@ -58,6 +59,27 @@ test('lists two actual players and associates their separate sources', () => {
   assert.equal(streams[0].player, 'video-1');
   assert.equal(streams[1].player, 'video-2');
   assert.ok(streams.every(m => !m.url.includes('segment') && !m.url.includes('fake')));
+});
+
+test('ignores empty source placeholders that the DOM resolves to the HTML page', () => {
+  const frame = 'https://page.test/watch?id=12';
+  const element = video('Player', '', [{src:frame, rawSrc:'', type:'video/mp4'}, {src:frame, rawSrc:null, type:'video/webm'}]);
+  element.currentSrc = frame;
+  const env = environment([element], frame);
+  assert.equal(env.messages.filter(m => m.event === 'player').length, 1);
+  assert.equal(env.messages.filter(m => m.event === 'stream').length, 0);
+});
+
+test('finds complete videoUrl sources in JSON arrays without inventing a MIME for metadata endpoints', () => {
+  const env = environment([video('Player')]);
+  const xhr = new env.context.XMLHttpRequest();
+  xhr.getResponseHeader = () => 'application/json';
+  xhr.open('GET','https://page.test/api/media');xhr.responseURL='https://page.test/api/media';
+  xhr.responseText=JSON.stringify([{videoUrl:'https://cdn.test/movie.mp4?t=A%2FB',quality:'720'},
+    {videoUrl:'https://page.test/get_media?id=12',format:'mp4'}]);
+  xhr.listener();
+  const streams=env.messages.filter(m=>m.event==='stream');
+  assert.equal(streams.length,1);assert.equal(streams[0].url,'https://cdn.test/movie.mp4?t=A%2FB');
 });
 test('finds extensionless HLS behind a blob player, preserves signed URL and identifies live', async () => {
   const env = environment([video('Blob player', 'blob:https://page.test/id')]);
@@ -90,6 +112,55 @@ test('native selection activates the selected player and pause stops page audio'
   env.context.SimpleCastDetector.onmessage({ data: JSON.stringify({ action: 'pause' }) });
   assert.equal(second.paused, true);
 });
+
+test('captures complete and fallback streams from XHR player metadata without treating fragments as videos', () => {
+  const env = environment([video('Player')]);
+  const xhr = new env.context.XMLHttpRequest();
+  xhr.getResponseHeader = name => name === 'content-type' ? 'application/json' : null;
+  xhr.open('GET', 'https://page.test/api/player'); xhr.responseURL = 'https://page.test/api/player';
+  xhr.responseType = 'json'; xhr.response = { sources: {
+    hls: { auto: { src: 'https://cdn.test/av1/master.m3u8?t=A%2FB', srcFallback: 'https://cdn.test/avc/master.m3u8?t=C%2FD', type: 'application/x-mpegURL' } },
+    mp4: { '1080p': { src: 'https://cdn.test/1080p.mp4?t=E%2FF', type: 'video/mp4' },
+      fragment: { src: 'https://cdn.test/seg-1.m4s', type: 'video/mp4' } }
+  }};
+  xhr.listener();
+  const streams = env.messages.filter(m => m.event === 'stream');
+  assert.equal(streams.length, 3);
+  assert.ok(streams.every(m => m.player === 'video-1'));
+  assert.equal(streams.find(m => m.fallback).url, 'https://cdn.test/avc/master.m3u8?t=C%2FD');
+});
+
+test('reads small fetch metadata without consuming the response used by the page', async () => {
+  const response = new Response(JSON.stringify({sources: [{file:'https://cdn.test/video.mp4?token=A%2FB', type:'video/mp4'}]}), {
+    headers: {'content-type':'application/json'}
+  });
+  const env = environment([video('Player')], 'https://page.test/watch', response);
+  const original = await env.context.fetch('https://page.test/api/player');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.ok(env.messages.some(m => m.url === 'https://cdn.test/video.mp4?token=A%2FB'));
+  assert.equal((await original.json()).sources.length, 1);
+});
+
+test('ignores MP4-typed media fragments and initialization files while preserving the full manifest', () => {
+  const env = environment([video('Player', 'blob:https://page.test/id')]);
+  for (const path of ['movie.mp4/seg-61-v1-a1.m4s?hash=A%2FB', 'segment.ts', 'track.cmfv', 'track.cmfa',
+    'movie.mp4/init-v1-a1.mp4?token=1', 'initialization.mp4']) {
+    const url = 'https://cdn.test/' + path;
+    const xhr = new env.context.XMLHttpRequest();
+    xhr.getResponseHeader = () => 'video/mp4';
+    xhr.open('GET', url);
+    xhr.responseURL = url; xhr.responseType = 'arraybuffer'; xhr.listener();
+  }
+  assert.equal(env.messages.filter(m => m.event === 'stream').length, 0);
+  const manifest = new env.context.XMLHttpRequest();
+  manifest.getResponseHeader = () => 'application/vnd.apple.mpegurl';
+  manifest.open('GET', 'https://cdn.test/movie.mp4/index.m3u8?token=A%2FB');
+  manifest.responseURL = 'https://cdn.test/movie.mp4/index.m3u8?token=A%2FB';
+  manifest.responseText = '#EXTM3U\n#EXTINF:6,\nsegment.m4s\n#EXT-X-ENDLIST\n'; manifest.listener();
+  const streams = env.messages.filter(m => m.event === 'stream');
+  assert.ok(streams.every(m => m.mime === 'application/x-mpegURL'));
+  assert.ok(streams.some(m => m.url.endsWith('?token=A%2FB') && m.live === false));
+});
 test('removed players disappear and repeat scanning deduplicates streams', () => {
   const first = video('First', 'https://cdn.test/one.mp4');
   const env = environment([first]);
@@ -117,4 +188,26 @@ test('long playback keeps detecting new signed URLs after the catalog limit', ()
     xhr.open('GET', 'https://cdn.test/live.m3u8?token=' + i);
   }
   assert.ok(env.messages.some(m => m.event === 'stream' && m.url.endsWith('?token=179')));
+});
+
+
+test('reports the active source and rendered size for automatic player selection', () => {
+  const player = video('Main', 'https://cdn.test/playing.mp4?t=A%2FB');
+  player.paused = false;
+  const env = environment([player]);
+  const found = env.messages.find(m => m.event === 'player');
+  assert.equal(found.playing, true);
+  assert.equal(found.visible, true);
+  assert.equal(found.area, 300 * 169);
+  assert.equal(found.source, 'https://cdn.test/playing.mp4?t=A%2FB');
+});
+
+test('identifies HLS master playlists so audio renditions do not displace them', async () => {
+  const response = new Response('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=4000000\nvideo.m3u8\n', {
+    headers: {'content-type':'application/vnd.apple.mpegurl'}
+  });
+  const env = environment([video('Main')], 'https://page.test/', response);
+  await env.context.fetch('https://cdn.test/master.m3u8');
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(env.messages.some(m => m.event === 'stream' && m.master === true));
 });

@@ -18,6 +18,7 @@ public final class StreamCatalog {
         public String player;
         public String title;
         public Boolean live;
+        public boolean fallback, master;
         private long lastSeen;
         private final Set<String> associations = new LinkedHashSet<>();
         Stream(String url, String mime, String frame, String player, String title, Boolean live) {
@@ -53,9 +54,11 @@ public final class StreamCatalog {
                 || type.equals("audio/mpegurl") || type.equals("audio/x-mpegurl"))
             return "application/x-mpegURL";
         if (type.equals("application/dash+xml")) return type;
-        if (type.equals("video/mp4") || type.equals("video/webm")) return type;
         try {
             String path = new URI(url).getPath().toLowerCase(Locale.ROOT);
+            if (path.matches(".*\\.(ts|m4s|cmfv|cmfa)$")
+                || path.matches(".*/(init|initialization)([-_][^/]*)?\\.(mp4|m4v)$")) return null;
+            if (type.equals("video/mp4") || type.equals("video/webm")) return type;
             if (path.endsWith(".m3u8")) return "application/x-mpegURL";
             if (path.endsWith(".mpd")) return "application/dash+xml";
             if (path.endsWith(".mp4") || path.endsWith(".m4v")) return "video/mp4";
@@ -99,7 +102,19 @@ public final class StreamCatalog {
         for (Stream stream : streams.values())
             if (frame == null || stream.matches(frame, player)) result.add(stream);
         result.sort(java.util.Comparator.<Stream>comparingInt(s -> frame != null && s.exactMatch(frame, player) ? 0 : 1)
+            .thenComparingInt(s -> frame != null && s.fallback ? 0 : 1)
             .thenComparing(java.util.Comparator.comparingLong((Stream s) -> s.lastSeen).reversed()));
+        return result;
+    }
+    /** Prefer a site's alternate encoding, then the active source and a full HLS master. */
+    public List<Stream> forPlayback(String frame, String player, String currentSource) {
+        List<Stream> result = ranked(frame, player);
+        // Stable sorting retains observation order when these stronger signals are equal.
+        result.sort(java.util.Comparator.<Stream>comparingInt(s -> frame != null && s.exactMatch(frame, player) ? 0 : 1)
+            .thenComparingInt(s -> frame != null && s.fallback ? 0 : 1)
+            .thenComparingInt(s -> s.url.equals(currentSource) ? 0 : 1)
+            .thenComparingInt(s -> s.master ? 0 : 1)
+            .thenComparingInt(s -> s.format().equals("HLS") ? 0 : 1));
         return result;
     }
     public List<Stream> all() { return new ArrayList<>(streams.values()); }

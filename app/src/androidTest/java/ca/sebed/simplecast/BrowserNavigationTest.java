@@ -88,7 +88,7 @@ public class BrowserNavigationTest {
         }
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             try {
-                var method = MainActivity.class.getDeclaredMethod("scanAndShow"); method.setAccessible(true);
+                var method = MainActivity.class.getDeclaredMethod("chooseSource"); method.setAccessible(true);
                 method.invoke(activity.getActivity());
             } catch (Exception error) { throw new AssertionError(error); }
         });

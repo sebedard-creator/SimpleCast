@@ -1,5 +1,6 @@
 package ca.sebed.simplecast.tv;
 
+import android.content.SharedPreferences;
 import ca.sebed.simplecast.PlaybackContext;
 import fi.iki.elonen.NanoHTTPD;
 import org.json.JSONObject;
@@ -8,18 +9,32 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Locale;
 import java.util.UUID;
+import java.io.IOException;
 
 /** Local control channel only: never serves or relays video bytes. */
 final class ControlServer extends NanoHTTPD {
     interface Listener { void command(String command, JSONObject body); }
     private final Listener listener;
+    private final SharedPreferences saved;
     private final String pin = String.format(Locale.ROOT, "%06d", new SecureRandom().nextInt(1000000));
-    private String token = UUID.randomUUID().toString();
+    private String token;
     private int failures;
     private long window;
     volatile String state = "idle", error = "";
 
-    ControlServer(Listener listener) { super("0.0.0.0", 0); this.listener = listener; }
+    private ControlServer(Listener listener, SharedPreferences saved, int port) {
+        super("0.0.0.0", port); this.listener = listener; this.saved = saved;
+        token = saved.getString("token", UUID.randomUUID().toString());
+    }
+    static ControlServer open(Listener listener, SharedPreferences saved) throws IOException {
+        int port = saved.getInt("port", 0);
+        ControlServer server = new ControlServer(listener, saved, port >= 0 && port <= 65535 ? port : 0);
+        try {
+            server.start(5000, true);
+            if (!saved.edit().putInt("port", server.getListeningPort()).commit()) throw new IOException("Appairage non enregistré");
+            return server;
+        } catch (IOException error) { server.stop(); throw error; }
+    }
     String pin() { return pin; }
     @Override public synchronized Response serve(IHTTPSession session) {
         try {
@@ -39,7 +54,10 @@ final class ControlServer extends NanoHTTPD {
                 if (now - window > 60000000000L) { window = now; failures = 0; }
                 if (failures >= 5) return reply(Response.Status.FORBIDDEN, "Réessaie dans une minute");
                 if (!pin.equals(body.optString("pin"))) { failures++; return reply(Response.Status.FORBIDDEN, "Code incorrect"); }
-                failures = 0; token = UUID.randomUUID().toString();
+                String nextToken = UUID.randomUUID().toString();
+                if (!saved.edit().putString("token", nextToken).commit())
+                    return reply(Response.Status.INTERNAL_ERROR, "Impossible d’enregistrer l’appairage");
+                failures = 0; token = nextToken;
                 return json(new JSONObject().put("token", token));
             }
             String supplied = session.getHeaders().getOrDefault("x-simplecast-token", "");

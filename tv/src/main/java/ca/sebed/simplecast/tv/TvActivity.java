@@ -53,9 +53,7 @@ public final class TvActivity extends Activity {
             for (Throwable cause = error; cause != null; cause = cause.getCause())
                 if (cause instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException)
                     detail += " · HTTP " + ((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) cause).responseCode;
-            server.error = detail; server.state = "error";
-            info.setText("Lecture impossible\n" + detail + "\nChoisis un autre flux depuis SimpleCast.");
-            info.setVisibility(View.VISIBLE);
+            playbackFailure(detail);
         }
     };
     @Override public void onCreate(Bundle saved) {
@@ -71,12 +69,26 @@ public final class TvActivity extends Activity {
     @Override public void onStart() {
         super.onStart();
         player = new ExoPlayer.Builder(this).build(); player.addListener(listener); video.setPlayer(player);
-        server = new ControlServer((command, body) -> main.post(() -> apply(command, body)));
-        try { server.start(5000, true); advertise(); showWelcome(); }
+        try {
+            server = ControlServer.open((command, body) -> main.post(() -> apply(command, body)),
+                getSharedPreferences("simplecast-receiver", MODE_PRIVATE));
+            advertise(); showWelcome();
+        }
         catch (Exception error) { info.setText("Connexion locale indisponible. Rouvre SimpleCast TV."); }
     }
     private void apply(String command, JSONObject body) {
         if (player == null || server == null) return;
+        try { applyPlayback(command, body); }
+        catch (RuntimeException error) { playbackFailure("Flux non pris en charge"); }
+    }
+    private void playbackFailure(String detail) {
+        if (server == null) return;
+        server.error = detail; server.state = "error";
+        info.setText("Lecture impossible\n" + detail
+            + "\n\nL’appairage est conservé. Choisis un autre flux depuis SimpleCast.\nRetour : accueil SimpleCast TV.");
+        info.setVisibility(View.VISIBLE);
+    }
+    private void applyPlayback(String command, JSONObject body) {
         if (command.equals("load")) {
             Map<String, String> observed = new LinkedHashMap<>();
             JSONObject supplied = body.optJSONObject("headers");
@@ -94,7 +106,7 @@ public final class TvActivity extends Activity {
             player.prepare(); player.play();
         } else if (command.equals("play")) player.play();
         else if (command.equals("pause")) player.pause();
-        else if (command.equals("stop")) { player.stop(); player.clearMediaItems(); server.state = "idle"; showWelcome(); }
+        else if (command.equals("stop")) { player.stop(); player.clearMediaItems(); server.error = ""; server.state = "idle"; showWelcome(); }
     }
     private void showWelcome() {
         if (server == null) return;
@@ -135,6 +147,10 @@ public final class TvActivity extends Activity {
         super.onStop();
     }
     @Override public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (event.getKeyCode() == android.view.KeyEvent.KEYCODE_BACK && server != null && server.state.equals("error")) {
+            if (event.getAction() == android.view.KeyEvent.ACTION_UP) apply("stop", new JSONObject());
+            return true;
+        }
         return video.dispatchKeyEvent(event) || super.dispatchKeyEvent(event);
     }
 }

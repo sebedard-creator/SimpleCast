@@ -52,6 +52,32 @@ public class NativePlaybackTest {
     @Test public void decodesSignedHlsWithRequiredSiteHeadersOnTheTv() throws Exception { play(false); }
     @Test public void restoresImageWrappedSegmentsOnTheTv() throws Exception { play(true); }
     @Test public void restoresTransportAppendedAfterWebpImageOnTheTv() throws Exception { play(2); }
+    @Test public void playsAnotherStreamAfterHttpErrorAndBackWithoutPairingAgain() throws Exception {
+        String token = pair(); ControlServer original = receiver();
+        NanoHTTPD denied = new NanoHTTPD("127.0.0.1", 0) {
+            @Override public Response serve(IHTTPSession session) {
+                return newFixedLengthResponse(Response.Status.FORBIDDEN, "text/plain", "Denied");
+            }
+        };
+        denied.start(5000, true);
+        try {
+            request("load", new JSONObject().put("url", "http://127.0.0.1:" + denied.getListeningPort() + "/bad.m3u8")
+                .put("mime", "application/x-mpegURL"), token, 200);
+            long deadline = SystemClock.uptimeMillis() + 15000;
+            while (!receiver().state.equals("error")) {
+                assertTrue("Expected a playback error", SystemClock.uptimeMillis() < deadline); SystemClock.sleep(100);
+            }
+            assertTrue(receiver().error, receiver().error.contains("403"));
+            assertEquals("error", request("status", new JSONObject(), token, 200).getString("state"));
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+                var current = activity.getActivity();
+                current.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_BACK));
+                current.dispatchKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_BACK));
+            });
+            assertSame(original, receiver()); assertEquals("idle", receiver().state);
+            play(0, token);
+        } finally { denied.stop(); }
+    }
     /** Explicit hardware diagnostic only; source context stays in an untracked device file. */
     @Test public void playsRequestedExternalSource() throws Exception {
         String path = InstrumentationRegistry.getArguments().getString("sourceFile");
@@ -77,7 +103,8 @@ public class NativePlaybackTest {
         } finally { request("stop", new JSONObject(), token, 200); }
     }
     private void play(boolean envelope) throws Exception { play(envelope ? 1 : 0); }
-    private void play(int envelope) throws Exception {
+    private void play(int envelope) throws Exception { play(envelope, pair()); }
+    private void play(int envelope, String token) throws Exception {
         byte[] segment;
         try (var input = InstrumentationRegistry.getInstrumentation().getContext().getAssets().open("control.ts"); var out = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192]; int count;
@@ -114,7 +141,6 @@ public class NativePlaybackTest {
             }
         };
         fixture.start(5000, true);
-        String token = pair();
         try {
             JSONObject headers = new JSONObject().put("Referer", "https://player.test/").put("Origin", "https://player.test").put("X-Token", "temporary-stream-token");
             request("load", new JSONObject().put("url", "http://127.0.0.1:" + fixture.getListeningPort() + "/index.m3u8?t=A%2FB%3D")

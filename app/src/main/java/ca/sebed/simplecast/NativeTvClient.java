@@ -21,13 +21,18 @@ import java.util.function.Consumer;
 
 /** Exchanges small control messages; never downloads or relays the selected video. */
 final class NativeTvClient {
+    static final String CONNECTION_HELP = "Ouvre SimpleCast TV sur la télé associée, puis réessaie. Vérifie aussi que les deux appareils sont sur le même Wi-Fi.";
     static final class Target {
         final String host, name;
         final int port;
         Target(String host, int port, String name) { this.host = host; this.port = port; this.name = name; }
         String base() { return "http://" + (host.contains(":") ? "[" + host + "]" : host) + ":" + port; }
     }
-    interface Result { void complete(JSONObject response); void failed(String message); }
+    interface Result {
+        void complete(JSONObject response);
+        void failed(String message);
+        default void unavailable() { failed(CONNECTION_HELP); }
+    }
     private final NsdManager nsd;
     private final android.content.SharedPreferences saved;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -149,7 +154,8 @@ final class NativeTvClient {
                     if (code >= 200 && code < 300) result.complete(response);
                     else result.failed(response.optString("error", "La télé a refusé la commande."));
                 });
-            } catch (Exception error) { main.post(() -> { if (!closed) result.failed("Impossible de joindre SimpleCast TV. Ouvre l’appli sur la télé et vérifie le Wi-Fi."); }); }
+            } catch (java.io.IOException error) { main.post(() -> { if (!closed) result.unavailable(); }); }
+            catch (Exception error) { main.post(() -> { if (!closed) result.failed("Réponse de SimpleCast TV invalide."); }); }
             finally { if (connection != null) connection.disconnect(); }
         });
     }

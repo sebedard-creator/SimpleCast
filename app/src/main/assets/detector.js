@@ -18,9 +18,13 @@
   const kind = (url, type = '') => {
     const mime = type.split(';')[0].trim().toLowerCase();
     if (/^(application|audio)\/(x-mpegurl|vnd\.apple\.mpegurl|mpegurl)$/.test(mime)) return 'application/x-mpegURL';
-    if (/^(video\/(mp4|webm)|application\/dash\+xml)$/.test(mime)) return mime;
+    if (mime === 'application/dash+xml') return mime;
     try {
       const path = new URL(url).pathname.toLowerCase();
+      // MP4 MIME also describes individual HLS/DASH fragments, not just complete videos.
+      if (/\.(ts|m4s|cmfv|cmfa)$/.test(path)
+          || /\/(init|initialization)([-_][^/]*)?\.(mp4|m4v)$/.test(path)) return '';
+      if (/^video\/(mp4|webm)$/.test(mime)) return mime;
       if (path.endsWith('.m3u8')) return 'application/x-mpegURL';
       if (path.endsWith('.mpd')) return 'application/dash+xml';
       if (/\.(mp4|m4v)$/.test(path)) return 'video/mp4';
@@ -39,16 +43,34 @@
     if (activePlayer && videos.has(activePlayer)) return activePlayer;
     return videos.size === 1 ? videos.keys().next().value : '';
   }
-  function stream(value, type = '', live = null, player = owner()) {
+  function stream(value, type = '', live = null, player = owner(), fallback = false, master = false) {
     const url = absolute(value);
     const mime = kind(url, type);
     if (!url || !mime) return;
     const key = url + '|' + player;
-    const fingerprint = mime + '|' + live;
+    const fingerprint = mime + '|' + live + '|' + fallback + '|' + master;
     if (sent.get(key) === fingerprint) return;
     if (sent.size >= 150 && !sent.has(key)) sent.delete(sent.keys().next().value);
     sent.set(key, fingerprint);
-    post({ event: 'stream', url, mime, player, live });
+    post({ event: 'stream', url, mime, player, live, fallback, master });
+  }
+  function inspectSources(data, player) {
+    if (!data || typeof data !== 'object') return;
+    const sources = data.sources || data.playlist || data.streams || data.mediaDefinitions
+      || ((Array.isArray(data) || data.src || data.file || data.videoUrl) ? data : null);
+    if (!sources || typeof sources !== 'object') return;
+    scan();
+    player = player || owner();
+    let count = 0;
+    const visit = (value, depth) => {
+      if (!value || typeof value !== 'object' || depth > 8 || ++count > 500) return;
+      const type = typeof value.type === 'string' ? value.type : typeof value.mime === 'string' ? value.mime : '';
+      for (const key of ['src', 'file', 'url', 'videoUrl', 'srcFallback', 'fallbackSrc']) {
+        if (typeof value[key] === 'string') stream(value[key], type, null, player, key === 'srcFallback' || key === 'fallbackSrc');
+      }
+      Object.values(value).slice(0, 50).forEach(child => visit(child, depth + 1));
+    };
+    visit(sources, 0);
   }
   function scan() {
     for (const [id, video] of videos) if (!video.isConnected) {
@@ -71,11 +93,18 @@
       const id = ids.get(video);
       const rect = video.getBoundingClientRect();
       const label = short(video.getAttribute('aria-label') || video.title || document.title || location.hostname);
-      post({ event: 'player', player: id, label, playing: !video.paused,
+      const explicitSrc = (video.getAttribute('src') || '').trim();
+      const currentSrc = video.currentSrc || (explicitSrc ? video.src : '');
+      post({ event: 'player', player: id, label, playing: !video.paused && !video.ended,
+        visible: rect.width > 0 && rect.height > 0, area: Math.round(rect.width * rect.height),
+        source: explicitSrc || absolute(currentSrc) !== absolute(location.href) ? absolute(currentSrc) : '',
         width: video.videoWidth || Math.round(rect.width), height: video.videoHeight || Math.round(rect.height) });
       const live = video.duration === Infinity ? true : Number.isFinite(video.duration) && video.duration > 0 ? false : null;
-      stream(video.currentSrc || video.src, '', live, id);
-      video.querySelectorAll('source').forEach(source => stream(source.src, source.type, live, id));
+      // An empty src attribute resolves to the HTML page in DOM URL properties.
+      if (explicitSrc || absolute(currentSrc) !== absolute(location.href)) stream(currentSrc, '', live, id);
+      video.querySelectorAll('source').forEach(source => {
+        if ((source.getAttribute('src') || '').trim()) stream(source.src, source.type, live, id);
+      });
     });
     // An iframe may contain its own player; the document-start script runs there too.
   }
@@ -91,11 +120,12 @@
   };
   async function inspectResponse(response, requestedUrl, player) {
     const url = response.url || requestedUrl;
-    const mime = kind(url, response.headers.get('content-type') || '');
-    if (!mime) return;
-    stream(url, mime, null, player);
-    if (!mime.includes('mpegURL') && !mime.includes('dash')) return;
-    // Inspect only small manifest bodies; never read or download the video itself.
+    const contentType = response.headers.get('content-type') || '';
+    const mime = kind(url, contentType);
+    const json = /\bjson\b/i.test(contentType);
+    if (mime) stream(url, mime, null, player);
+    if (!json && !mime.includes('mpegURL') && !mime.includes('dash')) return;
+    // Inspect only small manifests and player source metadata; never consume video bodies.
     if (Number(response.headers.get('content-length')) > 1048576) return;
     const clone = response.clone();
     if (!clone.body) return;
@@ -111,7 +141,8 @@
         body += decoder.decode(chunk.value, { stream: true });
       }
       body += decoder.decode();
-      stream(url, mime, manifestLive(body, mime), player);
+      if (json) inspectSources(JSON.parse(body), player);
+      else stream(url, mime, manifestLive(body, mime), player, false, body.startsWith('#EXTM3U') && /#EXT-X-STREAM-INF:/.test(body));
     } catch (_) { }
   }
   if (window.fetch) {
@@ -133,13 +164,24 @@
       stream(url, '', null, player);
       this.addEventListener('load', () => {
         try {
-          const mime = kind(this.responseURL || url, this.getResponseHeader('content-type') || '');
+          const contentType = this.getResponseHeader('content-type') || '';
+          const mime = kind(this.responseURL || url, contentType);
+          if (/\bjson\b/i.test(contentType)) {
+            if ((!this.responseType || this.responseType === 'text') && this.responseText.length <= 1048576)
+              inspectSources(JSON.parse(this.responseText), player);
+            else if (this.responseType === 'json' && Number(this.getResponseHeader('content-length')) <= 1048576)
+              inspectSources(this.response, player);
+          }
           let live = null;
+          let master = false;
           if ((mime.includes('mpegURL') || mime.includes('dash')) && (!this.responseType || this.responseType === 'text')) {
             const body = this.responseText;
-            if (body.length <= 1048576) live = manifestLive(body, mime);
+            if (body.length <= 1048576) {
+              live = manifestLive(body, mime);
+              master = body.startsWith('#EXTM3U') && /#EXT-X-STREAM-INF:/.test(body);
+            }
           }
-          stream(this.responseURL || url, mime, live, player);
+          stream(this.responseURL || url, mime, live, player, false, master);
         } catch (_) { }
       }, { once: true });
       return original.call(this, method, url, ...args);

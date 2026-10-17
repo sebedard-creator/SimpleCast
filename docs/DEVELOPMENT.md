@@ -2,11 +2,19 @@
 
 ## Modules
 
-- `app`: Android phone browser, player detection, standard Cast, optional phone relay, and SimpleCast TV controls.
+- `app`: Android phone browser, automatic player/source selection, and SimpleCast TV controls. No Google Cast SDK or phone media relay.
 - `tv`: Native Android TV / Google TV receiver using AndroidX Media3. Its local HTTP server carries control messages only.
 - `protocol`: Shared URL validation, request context, and supported video envelope decoding.
 
 The phone keeps application ID `ca.sebed.castsimple` so existing installations can be updated. The TV app uses `ca.sebed.simplecast.tv`.
+
+The TV persists its paired controller token and listening port in private preferences. Stream errors and normal app restarts preserve pairing while the TV's network address stays the same. Pairing another controller rotates the token; clearing the TV app's data removes it. The receiver still runs only while the TV app is open.
+
+Automatic sending refreshes live iframe players, prioritizes playing and visible players by rendered area, and prefers associated sources, site-provided fallback encodings, the current source, and full HLS masters. The optional source picker remains available for ambiguous pages or unsupported encodings. A local receiver fixture verifies one-tap sending without contacting a real TV.
+
+## Browser filtering
+
+The phone filters known ad hostnames locally using the bundled, unmodified AdAway hosts snapshot (CC BY 3.0; attribution in `app/src/main/assets/licenses/adaway.txt`). A document-start script hides explicitly named ad elements in all frames while preserving video and player containers. WebChromeClient suppresses JavaScript dialogs while filtering is enabled. The remembered menu switch disables hostname/cosmetic filtering and script-dialog suppression, then reloads the page; new-window blocking and automatic cross-site takeover protection remain active. The blocklist is bundled and is not downloaded at runtime.
 
 ## Native playback context
 
@@ -47,6 +55,6 @@ sh ./gradlew :app:connectedDebugAndroidTest
 sh ./gradlew :tv:connectedDebugAndroidTest
 ```
 
-When multiple devices are connected, set `ANDROID_SERIAL` to the intended device before running a module's tests. The hardware Cast smoke test requires an explicit `castDevice` argument. The real TV pairing test requires explicit `tvEndpoint` and `tvPin` arguments. The external native playback test requires a `sourceFile` argument pointing to an on-device JSON file containing `url`, `mime`, and `headers`. These hardware diagnostics skip by default. Remove temporary source files after testing; never check their stream tokens into Git.
+When multiple devices are connected, set `ANDROID_SERIAL` to the intended device before running a module's tests. The real TV pairing test requires explicit `tvEndpoint` and `tvPin` arguments. The external native playback test requires a `sourceFile` argument pointing to an on-device JSON file containing `url`, `mime`, and `headers`. These hardware diagnostics skip by default. Remove temporary source files after testing; never check their stream tokens into Git.
 
 Keep local SDK paths, signing keys, diagnostic captures, playback tokens, and device addresses out of version control. Generated `build/` directories are ignored. Only the two intentional distribution APKs belong in `dist/`.

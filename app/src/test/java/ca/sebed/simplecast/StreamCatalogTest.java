@@ -4,6 +4,27 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public class StreamCatalogTest {
+    @Test public void automaticPlaybackPrefersCurrentSourceOverAnUnrelatedNewerQuality() {
+        StreamCatalog catalog = new StreamCatalog(); String frame = "https://player.test/";
+        var current = catalog.add("https://cdn.test/playing.mp4?t=A%2FB", "", frame, "video-1", "", false);
+        catalog.add("https://cdn.test/other.m3u8", "", frame, "video-1", "", false);
+        assertEquals(current, catalog.forPlayback(frame, "video-1", current.url).get(0));
+        assertEquals("https://cdn.test/playing.mp4?t=A%2FB", current.url);
+    }
+    @Test public void automaticPlaybackPrefersFullMasterOverNewerAudioAndVideoRenditions() {
+        StreamCatalog catalog = new StreamCatalog(); String frame = "https://player.test/";
+        var master = catalog.add("https://cdn.test/master.m3u8", "", frame, "video-1", "", true); master.master = true;
+        catalog.add("https://cdn.test/video.m3u8", "", frame, "video-1", "", true);
+        catalog.add("https://cdn.test/audio.m3u8", "", frame, "video-1", "", true);
+        assertEquals(master, catalog.forPlayback(frame, "video-1", "").get(0));
+    }
+    @Test public void automaticPlaybackKeepsSiteAlternateEncodingAheadOfActiveUnsupportedSource() {
+        StreamCatalog catalog = new StreamCatalog(); String frame = "https://player.test/";
+        var fallback = catalog.add("https://cdn.test/avc.m3u8", "", frame, "video-1", "", false); fallback.fallback = true;
+        var current = catalog.add("https://cdn.test/av1.m3u8", "", frame, "video-1", "", false);
+        catalog.add("https://cdn.test/ad.mp4", "", frame, "video-2", "", false);
+        assertEquals(java.util.List.of(fallback, current), catalog.forPlayback(frame, "video-1", current.url));
+    }
     @Test public void prioritizesExactPlayerThenLatestSignedUrlWithoutChangingTokens() {
         StreamCatalog catalog = new StreamCatalog();
         String frame = "https://player.test/embed";
@@ -39,6 +60,26 @@ public class StreamCatalogTest {
         assertEquals("application/x-mpegURL", StreamCatalog.mediaMime("https://cdn.test/play?id=3", "application/vnd.apple.mpegurl; charset=utf-8"));
         assertEquals("application/dash+xml", StreamCatalog.mediaMime("https://cdn.test/play", "APPLICATION/DASH+XML"));
         assertEquals("video/mp4", StreamCatalog.mediaMime("https://cdn.test/asset/42", "video/mp4"));
+    }
+    @Test public void excludesMp4FragmentsAndInitializationFilesEvenWithVideoMime() {
+        StreamCatalog catalog = new StreamCatalog();
+        for (String path : new String[]{"/movie.mp4/seg-61-v1-a1.m4s?hash=A%2FB", "/segment.ts", "/track.cmfv", "/track.cmfa",
+            "/movie.mp4/init-v1-a1.mp4?token=1", "/initialization.mp4"}) {
+            String url = "https://cdn.test" + path;
+            assertNull(url, StreamCatalog.mediaMime(url, "video/mp4; codecs=av01"));
+            assertNull(catalog.add(url, "video/mp4", "https://player.test/", "video-1", "Video", false));
+        }
+        assertEquals(0, catalog.size());
+        assertEquals("video/mp4", StreamCatalog.mediaMime("https://cdn.test/movie.mp4?t=A%2FB", "video/mp4"));
+        assertEquals("application/x-mpegURL", StreamCatalog.mediaMime("https://cdn.test/movie.mp4/index.m3u8?t=A%2FB", ""));
+    }
+    @Test public void prioritizesSiteFallbackWithinTheSelectedPlayersAssociatedStreams() {
+        StreamCatalog catalog = new StreamCatalog(); String frame = "https://player.test/";
+        var alternate = catalog.add("https://cdn.test/avc/master.m3u8", "", frame, "video-1", "Video", false);
+        alternate.fallback = true;
+        var primary = catalog.add("https://cdn.test/av1/master.m3u8", "", frame, "video-1", "Video", false);
+        catalog.add("https://cdn.test/unrelated.mp4", "", "https://other.test/", "video-1", "Other", false);
+        assertEquals(java.util.List.of(alternate, primary), catalog.ranked(frame, "video-1"));
     }
     @Test public void rejectsNonNetworkAndCredentialUrls() {
         for (String url : new String[]{"blob:https://site.test/uuid", "javascript:alert(1)", "file:///etc/passwd", "https://user:pass@site.test/video.mp4", "https:///video.mp4", "not a url"}) {

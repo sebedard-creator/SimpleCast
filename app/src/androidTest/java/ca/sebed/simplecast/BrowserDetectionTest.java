@@ -23,7 +23,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import static org.junit.Assert.*;
 
-/** Tests only our app and our bundled demo; does not require a Chromecast or remote video playback. */
+/** Tests our bundled iframe demo and the optional source picker without a receiver. */
 @RunWith(AndroidJUnit4.class)
 public class BrowserDetectionTest {
     @Rule public ActivityTestRule<MainActivity> activity = new ActivityTestRule<>(MainActivity.class);
@@ -38,7 +38,7 @@ public class BrowserDetectionTest {
             return method.invoke(activity.getActivity());
         } catch (Exception exception) { throw new AssertionError(exception); }
     }
-    @Test public void listsThreePlayersIncludingIframeAndShowsTheirNames() throws Exception {
+    @Test public void detectsThreePlayersIncludingIframeAndKeepsSourcesInOneOptionalPicker() throws Exception {
         var instrumentation = InstrumentationRegistry.getInstrumentation();
         instrumentation.runOnMainSync(() -> {
             try { ((EditText) field("address")).setText("https://simplecast.test/demo"); }
@@ -65,7 +65,7 @@ public class BrowserDetectionTest {
                     && s.frame.equals("https://simplecast.test/embedded-demo")
                     && s.exactMatch(s.frame, "video-1")));
             } catch (Exception exception) { throw new AssertionError(exception); }
-            chooser.set((AlertDialog) invoke("showPlayers"));
+            chooser.set((AlertDialog) invoke("showSources"));
         });
         instrumentation.waitForIdleSync();
         instrumentation.runOnMainSync(() -> {
@@ -73,9 +73,9 @@ public class BrowserDetectionTest {
             assertTrue(chooser.get().isShowing());
             View root = chooser.get().getWindow().getDecorView();
             String labels = textIn(root);
-            assertTrue(labels, labels.contains("Big Buck Bunny"));
-            assertTrue(labels, labels.contains("Elephants Dream"));
-            assertTrue(labels, labels.contains("Sintel"));
+            assertTrue(labels, labels.contains("Autre source vidéo"));
+            assertTrue(labels, labels.contains("Source recommandée"));
+            assertEquals(3, chooser.get().getListView().getCount());
             assertTrue("Chooser has a laid out viewport", root.getWidth() > 0 && root.getHeight() > 0);
             Bitmap bitmap = Bitmap.createBitmap(root.getWidth(), root.getHeight(), Bitmap.Config.ARGB_8888);
             root.draw(new Canvas(bitmap));

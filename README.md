@@ -2,12 +2,12 @@
 
 Cast compatible video streams to your TV, even when the website's player has no Cast button or disables casting.
 
-A lightweight Android app that finds video players on web pages and sends their streams to Chromecast or SimpleCast TV. No direct video URL required, no app ads, and no added analytics.
+A lightweight Android browser that sends the video you are watching directly to SimpleCast TV on Android TV or Google TV. Open a site, start a video, and tap one button. No direct video URL required, no app ads, and no added analytics.
 
 - Detects players in pages and iframes, including MP4, WebM, HLS, and DASH streams.
-- Prioritizes playing players, associated streams, and recently detected URLs.
-- Blocks popups, unsolicited cross-site navigation, and selected advertising scripts.
-- Supports direct playback on Android TV and Google TV through SimpleCast TV.
+- Automatically selects the playing video and its stream, with alternate sources available from the menu.
+- Blocks known ad hosts and popups, and hides identifiable banners in pages and embedded frames.
+- Remembers your paired TV and provides playback controls without relaying video through the phone.
 
 <img src="docs/images/simplecast.png" alt="SimpleCast Android interface" width="320">
 
@@ -15,26 +15,28 @@ A lightweight Android app that finds video players on web pages and sends their 
 
 | APK | Version | Device |
 | --- | --- | --- |
-| [SimpleCast.apk](dist/SimpleCast.apk) | 0.3.1 | Android phone, Android 8.0+ |
-| [SimpleCast-TV.apk](dist/SimpleCast-TV.apk) | 0.1.1 | Android TV or Google TV, Android 8.0+ |
+| [SimpleCast.apk](dist/SimpleCast.apk) | 0.4.2 | Android phone, Android 8.0+ |
+| [SimpleCast-TV.apk](dist/SimpleCast-TV.apk) | 0.1.2 | Android TV or Google TV, Android 8.0+ |
 
-Keep both devices on the same local network. The phone app requires an up-to-date Android System WebView; standard Chromecast playback also requires Google Play Services.
+Install SimpleCast TV on the TV and keep both devices on the same local network. The phone requires an up-to-date Android System WebView. Chromecast with Google TV is supported through the TV app; older Chromecast devices without app installation are not supported.
 
 ## Use
 
-1. Open a video page in the phone app, or share its URL from your browser.
-2. Start the video, then tap **Scanner les lecteurs** or **Lecteurs détectés**.
-3. Choose the playing player and its stream.
+**First use:** Open SimpleCast TV on the TV. On the phone, tap **Associer une télé**, select your TV, and enter its displayed code. Pairing is remembered, including after stream errors and normal TV app restarts.
 
-**Android TV / Google TV:** Install and open SimpleCast TV on the TV. On the phone, tap **TV**, select the receiver, and enter its displayed code. After choosing a stream, tap **Lire sur SimpleCast TV**. The TV downloads the video directly, without relaying it through the phone. Once playback starts, you can turn off the phone's screen. Keep the TV app open. To switch receivers or reconnect after reopening it, disconnect through **TV**, then select the receiver again.
+1. Enter the streaming site's URL, or share it from your browser.
+2. Navigate to your video and press play.
+3. Tap **Envoyer à la télé**.
 
-**Chromecast:** Tap **Caster** and choose your Chromecast. The optional **Relayer par le téléphone** setting is off by default; enabling it routes video through the phone and uses more battery.
+The TV downloads the video directly. Once playback starts, you can turn off the phone's screen. Keep SimpleCast TV open on the TV. If the phone shows **Télé indisponible**, reopen the TV app and retry; this does not mean the video source is incompatible. Pause and stop controls appear on the phone during TV playback.
 
-A three-player demo is available under **? → Démonstration**.
+Use **⋮ → Autre source vidéo** if a source fails or only plays audio. Tap the TV's name at the top to switch receivers. Help and a demo are available under **⋮ → Aide**.
+
+The local ad filter is on by default. Disable **⋮ → Filtre antipub** if a site stops working; the page reloads and your choice is remembered. No VPN or filtering service is required.
 
 ## Limitations
 
-DRM, WebRTC, and transcoding are not supported. Playback depends on the server and device codecs. SimpleCast TV supports additional stream types and website request information that standard Cast cannot always handle. Browser cookies and account authorization headers are not transferred. Live links and temporary stream tokens can expire; reopen the player and scan again if needed. The popup filter is not a full ad blocker.
+DRM, WebRTC, and transcoding are not supported. Playback depends on the server and device codecs. Browser cookies and account authorization headers are not transferred. Live links and temporary stream tokens can expire; restart the video on the site and send it again if needed. The ad filter cannot remove every ad, including ads embedded in the video itself.
 
 ## Build
 
@@ -48,6 +50,8 @@ On Windows, use `gradlew.bat packageRelease`. Builds use the local development s
 
 ## License
 
-[MIT](LICENSE). Third-party components retain their own licenses, including [NanoHTTPD](app/src/main/assets/licenses/nanohttpd.txt) and [AndroidX Media3](tv/src/main/assets/licenses/media3.txt).
+[MIT](LICENSE). Third-party components retain their own licenses, including [NanoHTTPD](tv/src/main/assets/licenses/nanohttpd.txt) and [AndroidX Media3](tv/src/main/assets/licenses/media3.txt).
+
+The bundled [AdAway blocklist](https://github.com/AdAway/adaway.github.io/) is by Kicelo, Dominik Schuermann, and contributors, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). See its [attribution notice](app/src/main/assets/licenses/adaway.txt).
 
 **Note: The codebase and user interface are in French.**

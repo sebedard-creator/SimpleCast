@@ -1,0 +1,13 @@
+AdAway default blocklist
+
+The file ../ad-hosts.txt is an unmodified snapshot of the AdAway default blocklist,
+retrieved October 17, 2026. It is distributed under Creative Commons Attribution 3.0.
+
+Authors: Kicelo, Dominik Schuermann, and contributors listed in the project's history.
+Project: https://github.com/AdAway/adaway.github.io/
+Source: https://raw.githubusercontent.com/AdAway/adaway.github.io/master/hosts.txt
+History: https://github.com/AdAway/adaway.github.io/commits/master
+License: https://creativecommons.org/licenses/by/3.0/
+
+The original attribution and license notice are retained in ad-hosts.txt.
+SimpleCast's own application code remains under the MIT license.
