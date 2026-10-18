@@ -16,7 +16,7 @@ A lightweight Android browser that sends the video you are watching directly to 
 | APK | Version | Device |
 | --- | --- | --- |
 | [SimpleCast.apk](dist/SimpleCast.apk) | 0.4.4 | Android phone, Android 8.0+ |
-| [SimpleCast-TV.apk](dist/SimpleCast-TV.apk) | 0.1.2 | Android TV or Google TV, Android 8.0+ |
+| [SimpleCast-TV.apk](dist/SimpleCast-TV.apk) | 0.1.3 | Android TV or Google TV, Android 8.0+ |
 
 Install SimpleCast TV on the TV and keep both devices on the same local network. The phone requires an up-to-date Android System WebView. Chromecast with Google TV is supported through the TV app; older Chromecast devices without app installation are not supported.
 
@@ -38,6 +38,8 @@ The local ad filter is on by default. Disable **⋮ → Filtre antipub** if a si
 
 ## Limitations
 
+The TV uses the Chromium network engine from Google Play services when available, with native Android HTTP as a fallback. Cronet telemetry is explicitly disabled.
+
 DRM, WebRTC, and transcoding are not supported. Playback depends on the server and device codecs. Browser cookies and account authorization headers are not transferred. Live links and temporary stream tokens can expire; restart the video on the site and send it again if needed. The ad filter cannot remove every ad, including ads embedded in the video itself.
 
 ## Build
@@ -52,7 +54,7 @@ On Windows, use `gradlew.bat packageRelease`. Builds use the local development s
 
 ## License
 
-[MIT](LICENSE). Third-party components retain their own licenses, including [NanoHTTPD](tv/src/main/assets/licenses/nanohttpd.txt) and [AndroidX Media3](tv/src/main/assets/licenses/media3.txt).
+[MIT](LICENSE). Third-party components retain their own licenses, including [NanoHTTPD](tv/src/main/assets/licenses/nanohttpd.txt) and [AndroidX Media3](tv/src/main/assets/licenses/media3.txt), and the [Cronet API](tv/src/main/assets/licenses/cronet.txt). The TV optionally loads Cronet through [Google Play services](https://developers.google.com/android/guides/overview).
 
 The bundled [AdAway blocklist](https://github.com/AdAway/adaway.github.io/) is by Kicelo, Dominik Schuermann, and contributors, under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). See its [attribution notice](app/src/main/assets/licenses/adaway.txt).
 

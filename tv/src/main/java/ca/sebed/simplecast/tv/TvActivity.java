@@ -16,7 +16,6 @@ import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
-import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
@@ -64,6 +63,7 @@ public final class TvActivity extends Activity {
         info = new TextView(this); info.setTextColor(Color.rgb(235, 245, 241)); info.setTextSize(24);
         info.setGravity(Gravity.CENTER); info.setPadding(48, 32, 48, 32); info.setBackgroundColor(0xE6102225);
         root.addView(info, new FrameLayout.LayoutParams(-1, -1)); setContentView(root);
+        TvHttpDataSource.warmUp(getApplicationContext());
         video.requestFocus();
     }
     @Override public void onStart() {
@@ -96,8 +96,7 @@ public final class TvActivity extends Activity {
             Map<String, String> headers = PlaybackContext.headers("", observed, "SimpleCastTV/0.1");
             Map<String, String> ordinaryHeaders = new LinkedHashMap<>(headers); ordinaryHeaders.remove("X-Token");
             String mediaUrl = body.optString("url");
-            var http = new DefaultHttpDataSource.Factory().setDefaultRequestProperties(ordinaryHeaders)
-                .setUserAgent(headers.get("User-Agent")).setConnectTimeoutMs(12000).setReadTimeoutMs(12000);
+            var http = TvHttpDataSource.factory(getApplicationContext(), ordinaryHeaders);
             player.setMediaSource(new DefaultMediaSourceFactory(() -> new EnvelopeDataSource(
                 new ManifestTokenDataSource(http.createDataSource(), mediaUrl, headers)))
                 .createMediaSource(new MediaItem.Builder().setUri(mediaUrl).setMimeType(body.optString("mime", null)).build()));

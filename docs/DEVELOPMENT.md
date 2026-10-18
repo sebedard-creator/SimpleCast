@@ -20,6 +20,10 @@ Some players use an invalid PDF object (`data:application/pdf;base64,aG1t`, the 
 
 Popup requests receive a detached WebView with scripting, network, file access, and content access disabled; all navigations and resource responses are blocked. It is never added to the UI, is limited to two instances, and is destroyed on close or after two seconds. This preserves blank-window probes and prevents some scripts from falling back to a top-level advertising redirect. Only the known ad-library cache entry for a failed popup probe is reset; cookies and unrelated site storage are preserved.
 
+## TV networking
+
+A shared Cronet engine is loaded asynchronously from Google Play services and used by Media3 for ordinary HTTP requests. Initialization and first-request waiting are bounded, and devices without a usable provider fall back to `DefaultHttpDataSource`. The engine and its callback executor are shared across activity restarts; no Chromium native library is bundled. Cronet telemetry is disabled through its manifest metadata holder. Existing manifest-token handling still restricts `X-Token` to the original manifest origin and does not attach it to segment requests.
+
 ## Native playback context
 
 The phone sends the complete stream URL and observed referrer, origin, and user agent to the paired TV. An observed `X-Token` header is forwarded only for manifests on the stream's original HTTP origin, including its scheme and port. Redirects are handled explicitly to avoid sending that token to another origin; segment requests do not receive it. Browser cookies and account authorization headers stay in the browser.

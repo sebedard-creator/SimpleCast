@@ -1,5 +1,11 @@
 # Changelog
 
+## TV 0.1.3
+
+- Use Chromium networking from Google Play services for direct TV streaming, improving compatibility with servers that reject the standard Android HTTP client.
+- Keep native HTTP as a fallback when the Chromium provider is unavailable; no phone relay or bundled Chromium engine is added.
+- Disable Cronet telemetry explicitly and preserve TV pairing during the update.
+
 ## 0.4.4
 
 - Enable two-finger pinch zoom in the phone browser without adding on-screen zoom buttons.
